@@ -1,0 +1,47 @@
+param([ValidateSet('175','185b')][string]$Board='175',
+      [ValidateSet(0,1,2)][int]$PanelVariant=0,
+      [string]$CliPath='arduino-cli',[string]$ConfigFile='',
+      [ValidateRange(1,32)][int]$Jobs=4)
+$ErrorActionPreference='Stop'
+if($Board -eq '175' -and $PanelVariant -ne 0){throw '1.75 has only panel 0.'}
+$taskRoot=$PSScriptRoot
+$taskBuild=Join-Path $taskRoot ".build/$Board"
+$taskSketch=Join-Path $taskBuild 'MotoNav'
+$taskOutput=Join-Path $taskBuild 'output'
+New-Item -ItemType Directory -Force $taskSketch,$taskOutput | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $taskRoot "boards/$Board/MotoNav") -File | Where-Object Extension -in '.ino','.h' | Copy-Item -Destination $taskSketch -Force
+if($Board -eq '185b'){
+    $taskPin=Join-Path $taskSketch 'pin_config.h'
+    $taskText=[IO.File]::ReadAllText($taskPin)
+    $taskText=[regex]::Replace($taskText,'#define LCD_INIT_VARIANT [0-9]+',"#define LCD_INIT_VARIANT $PanelVariant")
+    [IO.File]::WriteAllText($taskPin,$taskText,[Text.UTF8Encoding]::new($false))
+}
+$taskArgs=@()
+if($ConfigFile){$taskArgs+=@('--config-file',$ConfigFile)}
+$taskArgs+=@('compile','--jobs',"$Jobs",'--libraries',(Join-Path $taskRoot 'libraries'),
+    '--build-path',(Join-Path $taskBuild 'build'),
+    '--fqbn','esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRAM=opi,CDCOnBoot=cdc',
+    '--output-dir',$taskOutput,$taskSketch)
+& $CliPath @taskArgs
+if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}
+$taskDest=Join-Path $taskRoot "dist/$Board/panel$PanelVariant"
+New-Item -ItemType Directory -Force $taskDest | Out-Null
+$taskLabel=if($Board -eq '175'){'1.75'}else{'1.85B'}
+$taskName="MotoNav_${taskLabel}_v7.8.11-qweather_panel$PanelVariant"
+$taskApp=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.bin'))
+$taskMerged=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.merged.bin'))
+$taskLength=0x10000+$taskApp.Length
+if($taskMerged.Length -lt $taskLength){throw 'Merged image is shorter than the application image.'}
+$taskSegment=[byte[]]::new($taskApp.Length)
+[Array]::Copy($taskMerged,0x10000,$taskSegment,0,$taskApp.Length)
+$taskHasher=[Security.Cryptography.SHA256]::Create()
+try {
+    if([Convert]::ToBase64String($taskHasher.ComputeHash($taskSegment)) -ne [Convert]::ToBase64String($taskHasher.ComputeHash($taskApp))){throw 'Unexpected application offset in merged image.'}
+} finally {$taskHasher.Dispose()}
+# Core 3.3.10 exports a 16 MiB merged image. Drop only padding after the app;
+# keep every byte of bootloader, partition table, boot data and the app itself.
+$taskFull=[byte[]]::new($taskLength)
+[Array]::Copy($taskMerged,0,$taskFull,0,$taskLength)
+[IO.File]::WriteAllBytes((Join-Path $taskDest "${taskName}_app_0x10000.bin"),$taskApp)
+[IO.File]::WriteAllBytes((Join-Path $taskDest "${taskName}_full_0x0.bin"),$taskFull)
+Get-ChildItem -LiteralPath $taskDest -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
