@@ -18,9 +18,13 @@ if($Board -eq '185b'){
 }
 $taskArgs=@()
 if($ConfigFile){$taskArgs+=@('--config-file',$ConfigFile)}
+$taskHomePrefix=[Environment]::GetFolderPath('UserProfile').Replace('\','/')
+$taskPrefixMap="-ffile-prefix-map=$taskHomePrefix=/builder"
 $taskArgs+=@('compile','--jobs',"$Jobs",'--libraries',(Join-Path $taskRoot 'libraries'),
     '--build-path',(Join-Path $taskBuild 'build'),
     '--fqbn','esp32:esp32:esp32s3:FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRAM=opi,CDCOnBoot=cdc',
+    '--build-property',"compiler.c.extra_flags=$taskPrefixMap",
+    '--build-property',"compiler.cpp.extra_flags=$taskPrefixMap",
     '--output-dir',$taskOutput,$taskSketch)
 & $CliPath @taskArgs
 if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}

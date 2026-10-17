@@ -19,7 +19,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install locked iOS dependencies
         working-directory: ios
-        run: pod install --deployment
+        run: |
+          sudo gem install cocoapods -v 1.16.2 --no-document
+          pod _1.16.2_ install --deployment
       - name: Build unsigned iPhone IPA
         run: ./scripts/build-ios-ipa.sh
       - name: Verify iOS data and BLE behavior
