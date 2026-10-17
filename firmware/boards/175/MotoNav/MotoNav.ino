@@ -207,7 +207,7 @@
 //   #f,1 / #f,0           v2.6 快速刷屏 开 / 关，保存后重启生效
 //   #t,0 / #t,1 / #t,2    v2.9 地图配色：0 原版，1 罪恶都市，2 GTA5（v6.1 增加 3~10，见版本记录）
 //   #Q,1 / #Q,0           v6.2 弯道急缓上色 开 / 关（v6.1 误用了 #q）
-//   #R,0~3                v6.2 圆屏方向：0 / 90 / 180 / 270 度
+//   #R,0~3[,角度]         v7.10.1 兼容四档方向，带第二项时按精确角度旋转
 //   #D角度                v6.4 圆屏方向任意角度 0~359（例 "#D37"；故意不带逗号，旧固件收到会忽略）
 //   #UNPAIR               v6.5 忘掉配对过的手机（v6.6 起保留正在连着的这台）
 //   #L毫秒                v6.7 小地图预判提前量 0~800（例 "#L300"；不带逗号，旧固件会忽略）
@@ -223,6 +223,8 @@
 //   #w,1 / #w,0           v4.9 清爽模式开 / 关
 //   #i,1,号码 / #i,0      v5.1 来电显示开始 / 结束（名字用 'B' 图片栏 2）
 //   #u,起,止,状态,...      v5.0 路况（米，离路线起点）；#y,1/0 重新规划中；#h,分钟 / #h 更快路线；#x,1/0 GPS 弱
+//   #HM,0/1               v7.9 App 音乐控制 / HID 媒体按键（保存到圆屏；互斥）
+//   HID,模式,可发按键        v7.9 HID 就绪状态；CAP,HID,1 能力通知
 //   #Z,有会话,播放中,按钮掩码   v7.8 音乐状态（1=上一首，2=播放暂停，4=下一首）；图片栏 5/6 为歌名/歌手
 // ---------------- 圆屏 → 手机（通知） ----------------
 //   T,M,Q / T,M,P / T,M,T / T,M,N   v7.8 请求音乐状态 / 上一首 / 播放暂停 / 下一首
@@ -230,7 +232,7 @@
 //   U,1                   v6.5 这台手机通过了配对验证（连上后发 3 次）
 //   V,电量,充电,USB,mV    v6.8 圆屏电池（电量 -1 = 没接电池）
 
-#define FW_VERSION "v7.8.11"
+#define FW_VERSION "v7.12.0"
 
 // 调试时想在串口监视器里看到每条收到的文字指令，把 0 改成 1
 #define DEBUG_SERIAL 0
@@ -253,6 +255,10 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLEHIDDevice.h>
+#include "HidMediaKeys.h"
+#include "AppleMediaClient.h"
+#include "ScreenRotationCommand.h"
 #include <BLESecurity.h>       // v6.5 配对验证
 #include <miniz.h>            // 罪恶都市轮廓：仅接收地图时解压
 #include "BootAnimation.h"
@@ -376,7 +382,7 @@ float mapCamLockH[MCAM_MAX];  // v4.0 放图标时的地图朝向：之后固定
 uint8_t laneBg[8], laneFr[8]; // 每条车道的背景方向码、推荐方向码（0xF = 不推荐）
 
 // ===== 文字图片（手机渲染好的 4 位灰度图）=====
-#define IMG_SLOTS 12           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
+#define IMG_SLOTS 13           // 0 = 路名，1 = 底部信息，2 = 来电人名字，3/4 = 天气地名和风湿度，5/6 = 音乐歌名和歌手
 #define IMG_MAX   8192        // 每张图最多字节数
 struct TextImg {
   uint8_t *show;              // 正在显示的图
@@ -385,11 +391,31 @@ struct TextImg {
   int recvId; uint16_t recvW; uint8_t recvH; uint8_t recvParts; uint32_t recvMask;
 };
 TextImg imgs[IMG_SLOTS];
+AppleMediaClient appleMedia;
+volatile uint32_t mediaConnectionEpoch = 0;
+uint32_t lyricImageGeneration = 0; uint16_t lyricImageTitleRevision = 0, lyricImageArtistRevision = 0;
+bool musicLyrics = false;                  // #ML,0/1; never persist an enabled default
 bool musicDirty = true;
 bool musicHave = false, musicPlaying = false;
 int musicActions = 0;
 int musicPressed = -1, musicAck = 0;
 unsigned long musicAckUntil = 0;
+// HID adds a second GATT service to the existing authenticated navigation connection.
+bool hidMusicMode = false;                  // persisted by #HM,0/1; Android explicitly selects 0
+BLEHIDDevice *mediaHid = nullptr;
+BLECharacteristic *mediaInput = nullptr;
+volatile bool hidSubscribed = false, hidSuspended = false, hidReportMode = true;
+volatile uint16_t hidSubscriber = 0xFFFF;
+volatile bool hidNotifyAccepted = false;
+volatile uint32_t hidSessionEpoch = 0;
+uint32_t hidSeenEpoch = 0;
+bool hidReadyShown = false, hidReleaseOnReady = true;
+String pendingHidStatus, pendingLyricsStatus, pendingMediaStatus;
+unsigned long hidInitialReleaseAt = 0;
+HidMediaKeys::Pulses hidPulses;
+unsigned long hidTapAt = 0;
+void hidMediaTick();
+bool hidMediaReady();
 bool wxDirty = false;                 // v5.3 天气页要重画
 
 // ================= v6.5 蓝牙配对验证 =================
@@ -431,10 +457,104 @@ class SecCB : public BLESecurityCallbacks {
 #endif
 };
 
+class HidInputCB : public BLECharacteristicCallbacks {
+public:
+#if defined(CONFIG_NIMBLE_ENABLED)
+  void onSubscribe(BLECharacteristic *, ble_gap_conn_desc *desc, uint16_t value) override {
+    hidSubscriber = desc ? desc->conn_handle : 0xFFFF;
+    hidSubscribed = (value & 1) != 0; ++hidSessionEpoch;
+  }
+#endif
+  void onStatus(BLECharacteristic *, Status status, uint32_t) override {
+    hidNotifyAccepted = status == SUCCESS_NOTIFY;
+  }
+};
+class HidControlCB : public BLECharacteristicCallbacks {
+public:
+  void onWrite(BLECharacteristic *c) override {
+    if (c->getLength() == 1 && c->getData()[0] <= 1) { hidSuspended = c->getData()[0] == 0; ++hidSessionEpoch; }
+  }
+};
+class HidProtocolCB : public BLECharacteristicCallbacks {
+public:
+  void onWrite(BLECharacteristic *c) override {
+    if (c->getLength() == 1 && c->getData()[0] <= 1) { hidReportMode = c->getData()[0] == 1; ++hidSessionEpoch; }
+  }
+};
+// Gate every report on this connection's pairing, host subscription and report mode.
+bool hidMediaLinkReady() {
+  return mediaInput && bleConnected && bleAuthed && hidSubscribed &&
+         hidSubscriber == bleConnHandle && !hidSuspended && hidReportMode;
+}
+bool hidMediaReady() { return hidMediaLinkReady() && !hidReleaseOnReady && hidSeenEpoch == hidSessionEpoch; }
+bool hidMediaNotify(uint16_t usage) {
+  if (!hidMediaLinkReady()) return false;
+  uint8_t report[2]; HidMediaKeys::encode(usage, report);
+  hidNotifyAccepted = false;
+  mediaInput->setValue(report, sizeof(report)); mediaInput->notify();
+  return hidNotifyAccepted; // queued by BLE stack; does not confirm player state
+}
+void hidMediaTick() {
+  static bool resetWritten = false;
+  uint32_t epoch = hidSessionEpoch;
+  if (hidSeenEpoch != epoch) {
+    hidPulses.reset(); hidReleaseOnReady = true; resetWritten = false; hidSeenEpoch = epoch;
+  }
+  bool linkReady = hidMediaLinkReady();
+  if (!linkReady) {
+    if (!resetWritten) {
+      hidPulses.reset(); hidReleaseOnReady = true;
+      if (mediaInput) { const uint8_t zero[2] = {0, 0}; mediaInput->setValue(zero, sizeof(zero)); }
+      resetWritten = true;
+    }
+  } else if (hidReleaseOnReady) {
+    resetWritten = false;
+    if (!hidInitialReleaseAt || millis() - hidInitialReleaseAt >= 50) {
+      hidInitialReleaseAt = millis();
+      if (hidMediaNotify(0)) hidReleaseOnReady = false;
+    }
+  } else {
+    if (!hidMusicMode) hidPulses.cancelQueued();
+    HidMediaKeys::Pulses::Report report;
+    if (hidPulses.poll(millis(), report)) {
+      bool sent = hidMediaNotify(report.usage);
+      hidPulses.submitted(report, millis(), sent);
+      if (!report.release || !sent) {
+        musicAck = sent ? 6 : 8; musicAckUntil = millis() + 2500; musicDirty = true;
+      }
+    }
+  }
+  bool ready = hidMediaReady();
+  static int lastMode = -1;
+  if (ready != hidReadyShown || lastMode != (int)hidMusicMode) {
+    hidReadyShown = ready; lastMode = hidMusicMode;
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (ready ? 1 : 0);
+    Serial.printf("MEDIA HID ready=%d auth=%d sub=%d suspended=%d report=%d release=%d\n", ready, (bool)bleAuthed, (bool)hidSubscribed, (bool)hidSuspended, (bool)hidReportMode, hidReleaseOnReady);
+    musicDirty = true;
+  }
+}
+void initMediaHid(BLEServer *server) {
+  mediaHid = new BLEHIDDevice(server);
+  mediaHid->manufacturer()->setValue("MotoNav");
+  // DIY/private device identity, not a borrowed keyboard vendor/product ID.
+  const uint8_t identity[7] = {0x01, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x01};
+  mediaHid->deviceInfo()->getCharacteristic(BLEUUID((uint16_t)0x2A50))->setValue(identity, sizeof(identity));
+  mediaHid->hidInfo(0, 0x02); // Normally Connectable, no remote wake claim
+  mediaHid->reportMap(const_cast<uint8_t *>(HidMediaKeys::REPORT_MAP), sizeof(HidMediaKeys::REPORT_MAP));
+  mediaInput = mediaHid->inputReport(HidMediaKeys::REPORT_ID);
+  mediaInput->setCallbacks(new HidInputCB());
+  const uint8_t zero[2] = {0, 0}; mediaInput->setValue(zero, sizeof(zero));
+  mediaHid->hidControl()->setCallbacks(new HidControlCB());
+  mediaHid->protocolMode()->setCallbacks(new HidProtocolCB());
+  mediaHid->setBatteryLevel(100); // updated from the existing fuel gauge in the loop
+  mediaHid->startServices();
+}
+
 class ServerCB : public BLEServerCallbacks {
   void onConnect(BLEServer *s) {
-    bleConnected = true;
+    bleConnected = true; ++mediaConnectionEpoch;
     bleAuthed = false;
+    hidSubscribed = false; hidSubscriber = 0xFFFF; hidSuspended = false; hidReportMode = true; ++hidSessionEpoch;
     bleConnAt = millis();
     authNotifies = 0;
   }
@@ -442,9 +562,10 @@ class ServerCB : public BLEServerCallbacks {
   void onConnect(BLEServer *s, ble_gap_conn_desc *desc) { if (desc) bleConnHandle = desc->conn_handle; }
 #endif
   void onDisconnect(BLEServer *s) {
-    bleConnected = false;
+    bleConnected = false; ++mediaConnectionEpoch;
     bleAuthed = false;
     bleConnHandle = 0xFFFF;
+    hidSubscribed = false; hidSubscriber = 0xFFFF; ++hidSessionEpoch;
     BLEDevice::startAdvertising();  // 断开后重新广播，方便手机重连
   }
 };
@@ -1671,9 +1792,11 @@ void handleBitmap(const uint8_t *d, int n) {
     im.showW = 0; im.showH = 0; im.recvId = -1;
     navDirty = true;
     if (slot == 3 || slot == 4) wxDirty = true;
-    if (slot == 5 || slot == 6) musicDirty = true;
+    if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;
     return;
   }
+  if (slot == 12 && (!musicLyrics || !hidMusicMode || !appleMedia.available ||
+      lyricImageGeneration != appleMedia.generation || lyricImageTitleRevision != appleMedia.values[0].revision || lyricImageArtistRevision != appleMedia.values[1].revision)) return;
   int total = ((w + 1) / 2) * h;
   if (total > IMG_MAX || parts > 32) return;
   if (id != im.recvId) {                          // 新的一张图：重新开始接收
@@ -1690,7 +1813,7 @@ void handleBitmap(const uint8_t *d, int n) {
     im.recvId = -1;
     navDirty = true;
     if (slot == 3 || slot == 4) wxDirty = true;
-    if (slot == 5 || slot == 6) musicDirty = true;                // 音乐文字图片收齐后刷新
+    if (slot == 5 || slot == 6 || slot == 12) musicDirty = true;                // 音乐文字图片收齐后刷新
   }
 }
 
@@ -2534,6 +2657,10 @@ void drawWeather() {
   // 风 · 湿度
   drawTextImg(4, 232, 0xC0);
   if (wxHourly) {
+    if (wxN <= 0) {
+      printCentered("HOURLY UNAVAILABLE", CX, 322, 2, C_GREY);
+      printCentered("CHECK PHONE WEATHER DETAILS", CX, 354, 1, C_GREY);
+    }
     // v5.6 接下来几个小时：几点 / 图标 / 温度 / 降雨概率（≥10% 才显示）
     for (int i = 0; i < wxN && i < 6; i++) {
       int x = CX + (int)((i - (wxN - 1) / 2.0f) * 76);
@@ -2601,21 +2728,33 @@ void drawMusic() {
   frameIsMap = false;
   printCentered("MUSIC", CX, 65, 4, C_CYAN);
   bool linked = bleConnected && bleAuthed;
-  if (linked) {
+  if (hidMusicMode && linked && !appleMedia.available) {
+    printCentered("PHONE MEDIA KEYS", CX, 158, 2, C_WHITE);
+    printCentered("OPEN MUSIC APP ON PHONE", CX, 210, 2, C_GREY);
+  } else if (linked) {
     drawTextImg(5, 158, 0xFF);
     drawTextImg(6, 210, 0xBB);
   } else printCentered("PHONE OFFLINE", CX, 170, 3, C_GREY);
-  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER"};
+  bool showLyrics = linked && hidMusicMode && musicLyrics && appleMedia.available && imgs[12].showW > 0;
+  if (showLyrics) drawTextImg(12, 242, 0xDD);
+  const char *feedback[] = {"", "SENT", "PHONE RECEIVED", "DONE", "NO RESPONSE", "NO PLAYER", "HID SENT", "HID NOT READY", "HID SEND FAILED", "AMS SENT", "AMS SEND FAILED", "AMS QUEUED"};
   String state = linked && musicHave ? (musicPlaying ? "PLAYING" : "PAUSED") : "NO PLAYER";
-  if (musicAck > 0 && musicAck <= 5) state = feedback[musicAck];
-  printCentered(state, CX, 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
+  if (hidMusicMode) {
+    state = !hidMediaReady() ? (appleMedia.controlMask() ? "AMS MEDIA READY" : "PAIR HID IN PHONE SETTINGS") : !appleMedia.available ? "HID READY / AMS UNAVAILABLE"
+      : !appleMedia.playback.known ? "STATE UNKNOWN" : appleMedia.playback.state == 1 ? "PLAYING" : appleMedia.playback.state == 0 ? "PAUSED" : "SEEKING";
+  }
+  if (musicAck > 0 && musicAck <= 11) state = feedback[musicAck];
+  printCentered(state, CX, showLyrics ? 272 : 257, 2, musicAck == 4 ? C_ORANGE : C_GREY);
   for (int i = 0; i < 3; i++) {
     int x = CX + (i - 1) * 100, y = 335;
-    bool enabled = linked && musicHave;
+    bool enabled = hidMusicMode ? (hidMediaReady() || appleMedia.controlReady(i)) : linked && musicHave;
     uint16_t c = enabled ? C_WHITE : C_GREY;
     aaDisc(x, y, 43, enabled && musicPressed == i ? 0x0470 : enabled ? 0x19A7 : 0x1082);
     if (i == 1) {
-      if (musicPlaying) {
+      if (hidMusicMode && !appleMedia.playback.known) {
+        gfx->fillTriangle(x - 19, y - 15, x - 19, y + 15, x + 1, y, c);
+        gfx->fillRect(x + 7, y - 15, 5, 30, c); gfx->fillRect(x + 16, y - 15, 5, 30, c);
+      } else if (musicPlaying) {
         gfx->fillRect(x - 13, y - 15, 8, 30, c);
         gfx->fillRect(x + 5, y - 15, 8, 30, c);
       } else gfx->fillTriangle(x - 10, y - 17, x - 10, y + 17, x + 17, y, c);
@@ -2625,7 +2764,15 @@ void drawMusic() {
       gfx->fillRect(x + sign * 15 - 3, y - 15, 6, 30, c);
     }
   }
-  printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
+  if (hidMusicMode && appleMedia.available) {
+    double duration = AppleMediaData::duration(appleMedia.values[3].text.c_str());
+    if (duration > 0 && appleMedia.playback.known) {
+      double elapsed = appleMedia.playback.elapsed + appleMedia.playback.rate * (millis() - appleMedia.playbackAt) / 1000.0;
+      int sec = (int)constrain(elapsed, 0.0, duration), total = (int)duration;
+      char time[32]; snprintf(time, sizeof(time), "%d:%02d / %d:%02d", sec/60, sec%60, total/60, total%60);
+      printCentered(time, CX, 392, 2, C_GREY);
+    }
+  } else printCentered("SWIPE LEFT TO RETURN", CX, 402, 2, C_GREY);
   drawPageDots();
   needFlush = true;
 }
@@ -2870,6 +3017,18 @@ int musicButtonAt(int x, int y) {
 void musicTap(int x, int y) {
   if (dragging || page != 2 || callOn || pairOn || !bleConnected || !bleAuthed) return;
   int button = musicButtonAt(x, y);
+  if (hidMusicMode) {
+    if (button < 0) return;
+    bool hidReady = hidMediaReady();
+    if (!hidReady && !appleMedia.controlReady(button)) { musicAck = 7; musicAckUntil = millis() + 2500; musicDirty = true; return; }
+    if (hidTapAt && millis() - hidTapAt < 120) return;
+    hidTapAt = millis();
+    if (!hidReady) {
+      musicAck = appleMedia.control(button) ? 11 : 10; musicAckUntil = millis() + 2500; musicDirty = true; return;
+    }
+    if (!hidPulses.enqueue(button)) { musicAck = 8; musicAckUntil = millis() + 2500; musicDirty = true; }
+    return; // no T,M,P/T/N: do not also control Apple Music through the App
+  }
   if (button < 0 || !musicHave) {
     pendingEvt = String("T,M,H,") + x + "," + y + "," + button;
     return;
@@ -3900,6 +4059,7 @@ void batPoll() {
   bool usb = ((s1 >> 5) & 1) && !((s2 >> 3) & 1);
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
   batPct = pct; batChg = chg; usbIn = usb;
+  if (mediaHid && changed && pct >= 0) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
   if (changed) {
     if (onWaitScreen && page == 0 && !sliding) drawStatus();        // v7.2 只重画状态栏
     else if (inNav) navDirty = true;
@@ -3918,6 +4078,20 @@ void sendPendingAck() {
     authNotifies++;
     txChar->setValue((uint8_t *)"U,1", 3);
     txChar->notify();
+    txChar->setValue((uint8_t *)"CAP,HID,1", 9); txChar->notify();
+    txChar->setValue((uint8_t *)"CAP,LYR,1", 9); txChar->notify();
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
+    appleMedia.resend();
+    pendingLyricsStatus = String("ML,") + (musicLyrics ? 1 : 0);
+    pendingMediaStatus = String("AMC,") + appleMedia.controlMask();
+  }
+  if (pendingLyricsStatus.length()) { txChar->setValue((uint8_t *)pendingLyricsStatus.c_str(), pendingLyricsStatus.length()); txChar->notify(); pendingLyricsStatus = ""; }
+  if (pendingMediaStatus.length()) { txChar->setValue((uint8_t *)pendingMediaStatus.c_str(), pendingMediaStatus.length()); txChar->notify(); pendingMediaStatus = ""; }
+  uint8_t amsFrame[139]; size_t amsSize = 0;
+  if (appleMedia.nextFrame(amsFrame, amsSize, millis())) { txChar->setValue(amsFrame, amsSize); txChar->notify(); }
+  if (pendingHidStatus.length()) {
+    txChar->setValue((uint8_t *)pendingHidStatus.c_str(), pendingHidStatus.length());
+    txChar->notify(); pendingHidStatus = "";
   }
   if (pendingBootAck.length()) {
     txChar->setValue((uint8_t *)pendingBootAck.c_str(), pendingBootAck.length());
@@ -8733,6 +8907,42 @@ int hexVal(char c) {
 
 // 处理文字类消息
 void handleText(const String &m) {
+  if (m.startsWith("#LY,")) {
+    unsigned long gen = 0; unsigned title = 0, artist = 0;
+    if (sscanf(m.c_str(), "#LY,%lu,%u,%u", &gen, &title, &artist) == 3 && gen == appleMedia.generation &&
+        title == appleMedia.values[0].revision && artist == appleMedia.values[1].revision) {
+      lyricImageGeneration = gen; lyricImageTitleRevision = title; lyricImageArtistRevision = artist;
+    } else { lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    return;
+  }
+  if (m == "#ML,0" || m == "#ML,1") {
+    bool wasEnabled = musicLyrics;
+    musicLyrics = m == "#ML,1";
+    if (!musicLyrics) {
+      lyricImageGeneration = 0; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; imgs[12].recvMask = 0; imgs[12].recvParts = 0;
+      // Older companion renderers may have put lyrics in the artist bitmap.
+      // Ask for a fresh title/artist once per connection or on an actual OFF transition.
+      static uint32_t refreshedEpoch = 0xffffffff;
+      if (wasEnabled || refreshedEpoch != mediaConnectionEpoch) {
+        refreshedEpoch = mediaConnectionEpoch;
+        imgs[6].showW = 0; imgs[6].showH = 0; imgs[6].recvId = -1; pendingEvt = "T,M,Q";
+      }
+    }
+    pendingLyricsStatus = String("ML,") + (musicLyrics ? 1 : 0);
+    Serial.printf("MEDIA LYRICS enabled=%d\n", musicLyrics);
+    musicDirty = true; return;
+  }
+  if (m == "#HM,0" || m == "#HM,1") {
+    bool enabled = m == "#HM,1";
+    if (enabled != hidMusicMode) {
+      hidMusicMode = enabled; hidPulses.cancelQueued();
+      Preferences pr; pr.begin("motonav", false); pr.putBool("mediahid", enabled); pr.end();
+    }
+    if (!hidMusicMode) { musicLyrics = false; imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; }
+    musicAck = 0; musicAckUntil = 0; musicDirty = true;
+    pendingHidStatus = String("HID,") + (hidMusicMode ? 1 : 0) + "," + (hidMediaReady() ? 1 : 0);
+    return;
+  }
   // A dedicated command: no navigation state or screen invalidation.
   if (m.startsWith("#BOOT,")) {
     int id = BootAnimation::parse(m.c_str() + 6);
@@ -8750,15 +8960,17 @@ void handleText(const String &m) {
     pendingBootAck = "BOOT," + String(saved ? bootBrand : -1);
     return;
   }
+  if (m == "#AMS?") { appleMedia.resend(); return; }
   if (m == "#GB?") { pendingBuildingCapability=true; return; }
   if (m.startsWith("#ZACK,")) {
+    if (hidMusicMode) return;
     musicAck = constrain(m.substring(6).toInt(), 0, 5);
     musicAckUntil = millis() + 2500; musicDirty = true; return;
   }
   if (m.startsWith("#Z,")) {
     int have = 0, play = 0, actions = 0;
     if (sscanf(m.c_str(), "#Z,%d,%d,%d", &have, &play, &actions) == 3) {
-      musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; musicDirty = true;
+      if (!hidMusicMode) { musicHave = have != 0; musicPlaying = play != 0; musicActions = actions & 7; } musicDirty = true;
     }
     return;
   }
@@ -8849,9 +9061,13 @@ void handleText(const String &m) {
     return;
   }
   if (m.startsWith("#Q,")) { curveOn = m.substring(3).toInt() != 0; navDirty = true; return; }   // v6.2 弯道上色
-  if (m.startsWith("#R,")) {                             // v6.2 圆屏方向（90° 一档）
-    int d = (m.substring(3).toInt() & 3) * 90;
-    if (d != screenDeg) { setScreenDeg(d, true); navDirty = true; needFlush = true; }
+  if (m.startsWith("#R,") || m.startsWith("#D")) {
+    // iOS sends #R,nearestQuarter,exactDegrees; Android sends #R then #Ddegrees.
+    // Preserve legacy #R,quarter while applying the exact angle when supplied.
+    int d;
+    if (ScreenRotationCommand::parse(m.c_str(), d) && d != screenDeg) {
+      setScreenDeg(d, true); navDirty = true; needFlush = true;
+    }
     return;
   }
   if (m.startsWith("#L")) {                              // v6.7 预判提前量："#L300"
@@ -8873,11 +9089,6 @@ void handleText(const String &m) {
       }
     }
 #endif
-    return;
-  }
-  if (m.startsWith("#D")) {                              // v6.4 圆屏方向任意角度："#D37"
-    int d = m.substring(2).toInt();
-    if (((d % 360) + 360) % 360 != screenDeg) { setScreenDeg(d, true); navDirty = true; needFlush = true; }
     return;
   }
   if (m.startsWith("#e")) {                              // v3.1 行程信息：剩余米,到达时间HHMM,红绿灯数
@@ -9070,6 +9281,7 @@ void setup() {
     screenRot = pr.getInt("rot", 0) & 3;                            // v6.2 圆屏方向
     setScreenDeg(pr.getInt("rotd", screenRot * 90), false);         // v6.4 任意角度
     bootBrand = BootAnimation::valid(pr.getInt("bootbrand", 0));
+    hidMusicMode = pr.getBool("mediahid", false);
     fastFlushOn = pr.getBool("fastf", true);
     pr.end();
     if (qspiMHz != 40 && qspiMHz != 60 && qspiMHz != 80) qspiMHz = 40;
@@ -9137,14 +9349,41 @@ void setup() {
   txChar = svc->createCharacteristic(TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);   // v2.0
   txChar->addDescriptor(new BLE2902());
   svc->start();
+  initMediaHid(server);
+  appleMedia.begin();
   BLEAdvertising *adv = BLEDevice::getAdvertising();
   adv->addServiceUUID(SERVICE_UUID);
+  adv->addServiceUUID(BLEUUID((uint16_t)0x1812));
+  adv->setAppearance(GENERIC_HID);
   adv->setScanResponse(true);
   BLEDevice::startAdvertising();
   Serial.println(String("MotoNav ready, firmware ") + FW_VERSION);
 }
 
 void loop() {
+  hidMediaTick();                                      // press/release without blocking navigation
+  static uint32_t lyricConnectionEpoch = 0;
+  if (lyricConnectionEpoch != mediaConnectionEpoch) {
+    lyricConnectionEpoch = mediaConnectionEpoch; musicLyrics = false; lyricImageGeneration = 0;
+    imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1; musicDirty = true;
+  }
+  appleMedia.tick(bleConnected && bleAuthed && hidMusicMode, bleConnHandle, mediaConnectionEpoch, millis());
+  static int lastControlMask = -1;
+  int controlMask = appleMedia.controlMask();
+  if (lastControlMask != controlMask) { lastControlMask = controlMask; pendingMediaStatus = String("AMC,") + controlMask; musicDirty = true; Serial.printf("MEDIA AMS controls=%d\n", controlMask); }
+  if (appleMedia.controlAck) { musicAck = appleMedia.controlAck > 0 ? 9 : 10; appleMedia.controlAck = 0; musicAckUntil = millis() + 2500; musicDirty = true; }
+  if (appleMedia.changed) {
+    appleMedia.changed = false; musicDirty = true;
+    static uint32_t lyricGeneration = 0; static uint16_t lyricTitleRevision = 0, lyricArtistRevision = 0;
+    if (lyricGeneration != appleMedia.generation || lyricTitleRevision != appleMedia.values[0].revision || lyricArtistRevision != appleMedia.values[1].revision) {
+      lyricImageGeneration = 0;
+      lyricGeneration = appleMedia.generation; lyricTitleRevision = appleMedia.values[0].revision; lyricArtistRevision = appleMedia.values[1].revision;
+      imgs[12].showW = 0; imgs[12].showH = 0; imgs[12].recvId = -1;
+    }
+    if (hidMusicMode) { musicHave = appleMedia.available && appleMedia.values[0].text.length(); musicPlaying = appleMedia.playback.known && appleMedia.playback.state == 1; }
+  }
+  static unsigned long mediaDrawAt = 0;
+  if (hidMusicMode && appleMedia.available && millis() - mediaDrawAt >= 1000) { mediaDrawAt = millis(); musicDirty = true; }
   saveRotIfDue();                                      // v6.4
   // v6.5 连上 60 秒还没通过验证（不是自己的手机）：断开，让自己的手机能连
 #if defined(CONFIG_NIMBLE_ENABLED)

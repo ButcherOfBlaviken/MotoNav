@@ -27,7 +27,7 @@ if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}
 $taskDest=Join-Path $taskRoot "dist/$Board/panel$PanelVariant"
 New-Item -ItemType Directory -Force $taskDest | Out-Null
 $taskLabel=if($Board -eq '175'){'1.75'}else{'1.85B'}
-$taskName="MotoNav_${taskLabel}_v7.8.11-qweather_panel$PanelVariant"
+$taskName="MotoNav_${taskLabel}_v7.12.0-hid_panel$PanelVariant"
 $taskApp=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.bin'))
 $taskMerged=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.merged.bin'))
 $taskLength=0x10000+$taskApp.Length
@@ -44,4 +44,15 @@ $taskFull=[byte[]]::new($taskLength)
 [Array]::Copy($taskMerged,0,$taskFull,0,$taskLength)
 [IO.File]::WriteAllBytes((Join-Path $taskDest "${taskName}_app_0x10000.bin"),$taskApp)
 [IO.File]::WriteAllBytes((Join-Path $taskDest "${taskName}_full_0x0.bin"),$taskFull)
+# Integrity manifest consumed by the Mac flashing entry point; UTF-8 without BOM.
+if($Board -eq '175') {
+    $taskManifestFiles=@()
+    foreach($taskSuffix in @('app_0x10000','full_0x0')) {
+        $taskFileName="${taskName}_${taskSuffix}.bin"
+        $taskFilePath=Join-Path $taskDest $taskFileName
+        $taskManifestFiles+=@{file=$taskFileName;bytes=(Get-Item -LiteralPath $taskFilePath).Length;sha256=(Get-FileHash -LiteralPath $taskFilePath -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
+    $taskManifest=@{firmware='7.12.0';board='Waveshare ESP32-S3-Touch-AMOLED-1.75';esp32Core='3.3.10';flashSize='16MB';partition='app3M_fat9M_16MB';verifiedApplicationOffset='0x10000';deviceTested=$false;files=$taskManifestFiles}
+    [IO.File]::WriteAllText((Join-Path $taskDest "${taskName}_manifest.json"),($taskManifest | ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
+}
 Get-ChildItem -LiteralPath $taskDest -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
