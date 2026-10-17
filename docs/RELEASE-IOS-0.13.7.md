@@ -1,10 +1,10 @@
 # MotoNav iOS 0.13.7
 
-本版包含 iPhone 圆屏导航、高德建筑底图及沿线离线地图、天气、HID 媒体按键、AMS 歌曲信息与可选歌词，以及高速模拟导航换图与蓝牙传输修复。配套通用圆屏固件为 7.12.0，iOS、Android 共用；手机 APK 与 IPA 分开发布。详见 [固件说明](../firmware/README.md)。
+本版包含 iPhone 圆屏导航、高德建筑底图及沿线离线地图、天气、HID 媒体按键、AMS 歌曲信息与可选歌词，以及高速模拟导航换图与蓝牙传输修复。配套通用圆屏固件为 7.12.0，iOS、Android 共用；手机 APK 与 IPA 分开发布。详见 [固件说明](https://github.com/zyn950929/MotoNav/blob/ios-v0.13.7/firmware/README.md)。
 
 ## 下载及安装
 
-下载 `MotoNav-0.13.7-unsigned.ipa`，使用自己的 Apple 账号通过 Sideloadly 签名安装。详见 [安装、续签及 Key 配置教程](INSTALL-IOS.md)。另提供源码 ZIP 与 `SHA256SUMS.txt`。
+下载 `MotoNav-0.13.7-unsigned.ipa`，使用自己的 Apple 账号通过 Sideloadly 签名安装。详见 [安装、续签及 Key 配置教程](https://github.com/zyn950929/MotoNav/blob/ios-v0.13.7/docs/INSTALL-IOS.md)。另提供源码 ZIP 与 `SHA256SUMS.txt`。
 
 - iPhone：iOS 15.0 及以上；iOS 16 及以上按系统提示启用开发者模式。
 - 免费 Apple 账号通常需要每七天续签。
