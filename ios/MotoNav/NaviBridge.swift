@@ -233,7 +233,9 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 不去这个目的地了（换目的地）
     func clearPlan() {
         if navigating { return }
+        let holdingArrival = arrival.canClearArrival(arrival.generation)
         arrival.cancel(arrival.generation)
+        if holdingArrival { manager.stopNavi() }
         invalidateArrival()
         MapFeeder.shared.onNaviEnd()
         planSeq += 1
@@ -250,6 +252,9 @@ final class NaviBridge: NSObject, ObservableObject {
         planFailed = false
         MapFeeder.shared.onNaviEnd()
         if cruising { stopCruise() }
+        let holdingArrival = arrival.canClearArrival(arrival.generation)
+        arrival.cancel(arrival.generation)
+        if holdingArrival { manager.stopNavi() }
         arrival.preparePlan()
         invalidateArrival()
         installCallbacks()

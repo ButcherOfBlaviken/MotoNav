@@ -17,6 +17,18 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect firmware source changes
+        id: firmware
+        shell: bash
+        run: |
+          PREVIOUS=$(git describe --tags --match 'ios-v*' --abbrev=0 HEAD 2>/dev/null || true)
+          if [[ -n "$PREVIOUS" ]] && git diff --quiet "$PREVIOUS" HEAD -- firmware; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Verify arrival lifecycle and callback sessions
         run: |
           swiftc ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift -o /tmp/arrival
@@ -40,6 +52,7 @@ jobs:
           /tmp/pacing
           python3 -m unittest discover -s firmware/tests -p 'test_*.py'
       - name: Install ESP32 build tools
+        if: steps.firmware.outputs.changed == 'true'
         run: |
           brew install arduino-cli
           arduino-cli config init
@@ -47,6 +60,7 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.3.10
       - name: Build universal round-screen firmware
+        if: steps.firmware.outputs.changed == 'true'
         run: python3 firmware/build.py
       - name: Package source, firmware and instructions
         shell: bash
@@ -54,7 +68,9 @@ jobs:
           VERSION=$(cat RELEASE_VERSION)
           test -f "output/ios/MotoNav-${VERSION}-unsigned.ipa"
           git archive --format=zip --prefix=MotoNav/ HEAD > "output/ios/MotoNav-${VERSION}-source.zip"
-          zip -qr "output/ios/MotoNav-universal-firmware-7.12.0.zip" firmware/dist/175/panel0
+          if [[ -d firmware/dist/175/panel0 ]]; then
+            zip -qr "output/ios/MotoNav-universal-firmware-7.12.0.zip" firmware/dist/175/panel0
+          fi
           cp docs/INSTALL-IOS.md output/ios/INSTALL-IOS.md
           cp firmware/README.md output/ios/FIRMWARE.md
           cp "docs/RELEASE-IOS-${VERSION}.md" output/ios/RELEASE-NOTES.md
