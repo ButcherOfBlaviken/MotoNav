@@ -1,0 +1,47 @@
+name: Verify and publish universal firmware
+on:
+  push:
+    branches: [main]
+    paths:
+      - firmware/RELEASE_VERSION
+      - .github/workflows/release-firmware.yml
+      - scripts/release-firmware.py
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: motonav-firmware-release
+  cancel-in-progress: false
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test media, rotation, idle shutdown and flashing rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test in firmware/tests/*Test.cpp; do
+            g++ -std=c++17 "$test" -o /tmp/motonav-test
+            /tmp/motonav-test
+          done
+          cc firmware/tests/idle-power-off-test.c -o /tmp/motonav-idle
+          /tmp/motonav-idle
+          python3 -m unittest discover -s firmware/tests -p 'test_flash_macos.py'
+  release:
+    needs: tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify original package and publish firmware assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/release-firmware.py

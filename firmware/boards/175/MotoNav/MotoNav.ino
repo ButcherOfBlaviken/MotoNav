@@ -232,7 +232,7 @@
 //   U,1                   v6.5 这台手机通过了配对验证（连上后发 3 次）
 //   V,电量,充电,USB,mV    v6.8 圆屏电池（电量 -1 = 没接电池）
 
-#define FW_VERSION "v7.12.0"
+#define FW_VERSION "v7.12.1"
 
 // 调试时想在串口监视器里看到每条收到的文字指令，把 0 改成 1
 #define DEBUG_SERIAL 0
@@ -250,6 +250,10 @@
 #include <Wire.h>
 #include "TouchDrvCSTXXX.hpp"     // v5.2 触摸屏（SensorLib 库，微雪示例里带的）
 #include <Preferences.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
+#include <driver/rtc_io.h>
+#include "IdlePowerOff.h"
 #include <driver/spi_master.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -358,6 +362,8 @@ int laneN = 0;                // 车道数，0 表示不显示
 // v3.1 小地图底部的行程信息（"#e,剩余米,到达时间HHMM,红绿灯数"）和前方红绿灯（"#g,距离"）
 bool tripOn = false;
 bool cruiseOn = false;        // v4.8 巡航模式（没有目的地，只显示地图、车速、电子眼、安全提示）
+IdlePowerOffTimer idlePowerOffTimer = {0, false};
+volatile bool powerOffPending = false;
 bool cleanOn = false;         // v4.9 清爽模式：地图照常，去掉红绿灯、电子眼、安全提示、测速牌和行程信息（"#w,1/0"）
 int tripRemainM = 0, tripEta = 0, tripLights = 0;
 // v7.3 路程进度
@@ -566,7 +572,7 @@ class ServerCB : public BLEServerCallbacks {
     bleAuthed = false;
     bleConnHandle = 0xFFFF;
     hidSubscribed = false; hidSubscriber = 0xFFFF; ++hidSessionEpoch;
-    BLEDevice::startAdvertising();  // 断开后重新广播，方便手机重连
+    if (!powerOffPending) BLEDevice::startAdvertising();
   }
 };
 
@@ -582,6 +588,7 @@ void saveAndRestart(const char *key, int val, bool isBool) {
 
 class RxCB : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *c) {
+    if (powerOffPending) return;
     size_t n = c->getLength();
     if (n == 0) return;
     const uint8_t *d0 = c->getData();
@@ -8885,6 +8892,8 @@ void drawNavFrame() {
 }
 
 void resetNavState() {
+  if (idlePowerOffNavigationActive(true, inNav, cruiseOn, navDir == "A"))
+    idlePowerOffReset(&idlePowerOffTimer, millis());
   inNav = false;
   tripOn = false; lightDist = -1;                       // v3.1
   mapCamN = 0;                                          // v3.5
@@ -9234,6 +9243,7 @@ void handleText(const String &m) {
       navAngle = NAN;
     }
     inNav = true;
+    if (navDir != "A") idlePowerOffReset(&idlePowerOffTimer, millis());
     updateRingTarget();
     navDirty = true;
   }
@@ -9269,6 +9279,8 @@ void setup() {
   makeBleName();                                       // v7.0 先算好蓝牙名（首页要显示）
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);   // 没打开串口监视器时打印不等待（v1.2 的修复）
+  Serial.printf("Reset reason=%d, sleep wake=%d\n", (int)esp_reset_reason(),
+                (int)esp_sleep_get_wakeup_cause());
   Wire.begin(IIC_SDA, IIC_SCL);
   touchInit();                                         // v5.2 触摸屏
   batInit();                                           // v6.8 电源芯片（电量）
@@ -9357,7 +9369,69 @@ void setup() {
   adv->setAppearance(GENERIC_HID);
   adv->setScanResponse(true);
   BLEDevice::startAdvertising();
+  idlePowerOffReset(&idlePowerOffTimer, millis());
   Serial.println(String("MotoNav ready, firmware ") + FW_VERSION);
+}
+
+// Power down before destroying BLE objects: the host can still dispatch events
+// referencing those objects. Shutdown does not need to reclaim their memory.
+void idlePowerOffShutdown() {
+  powerOffPending = true;
+  Serial.println("No navigation for 5 minutes: powering off");
+  const bool displayReady = !flushDone ||
+      xSemaphoreTake(flushDone, pdMS_TO_TICKS(3000)) == pdTRUE;
+  if (displayReady) {
+    panel->setBrightness(0);
+    panel->displayOff();
+  }
+  // Check the chip ID, rather than writing to an unknown device at address 0x34.
+  const int chip = pmuRead(0x03);
+  Serial.printf("Shutdown: PMIC id=%02X, on=%02X, off=%02X\n",
+                chip, pmuRead(0x20), pmuRead(0x21));
+  if (chip == 0x4A) {
+    const int config = pmuRead(0x10);
+    if (config >= 0) {
+      Wire.beginTransmission(PMU_ADDR);
+      Wire.write(0x10);
+      // Bit 1 is a separate, self-clearing RESET command; never replay it.
+      Wire.write((uint8_t)((config & ~0x02) | 0x01));
+      const int result = Wire.endTransmission();
+      Serial.printf("Shutdown: PMIC command result=%d\n", result);
+      delay(1000);
+    }
+  }
+  // If the PMIC is unavailable or external power keeps the CPU supplied, stop
+  // screen/BLE/CPU activity instead of repeatedly rebooting or staying awake.
+  // Normal PMIC-off wakes via PWR; this fallback can also wake via BOOT (GPIO0).
+  Serial.println("PMIC did not remove CPU power; entering deep sleep");
+  // Stop the host/controller without deleting live GATT objects. Deep sleep
+  // discards RAM anyway. Keep objects valid until pending callbacks have ended.
+#if defined(CONFIG_NIMBLE_ENABLED)
+  nimble_port_stop();
+#elif defined(CONFIG_BLUEDROID_ENABLED)
+  esp_bluedroid_disable();
+#endif
+#if CONFIG_BT_CONTROLLER_ENABLED
+  esp_bt_controller_disable();
+#endif
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  rtc_gpio_init(GPIO_NUM_0);
+  rtc_gpio_set_direction(GPIO_NUM_0, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pullup_en(GPIO_NUM_0);
+  rtc_gpio_pulldown_dis(GPIO_NUM_0);
+  // EXT0 is level-triggered: arming it while BOOT is held low causes an
+  // immediate wake/reboot. Require 100 ms released, with a bounded wait.
+  uint32_t releasedAt = millis(), waitAt = releasedAt;
+  while (millis() - waitAt < 1500 && millis() - releasedAt < 100) {
+    if (!rtc_gpio_get_level(GPIO_NUM_0)) releasedAt = millis();
+    delay(10);
+  }
+  if (millis() - releasedAt >= 100 && rtc_gpio_get_level(GPIO_NUM_0)) {
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+  } else {
+    Serial.println("BOOT is low; leave wake disabled to avoid instant restart (use PWR to power cycle)");
+  }
+  esp_deep_sleep_start();
 }
 
 void loop() {
@@ -9516,6 +9590,17 @@ void loop() {
     if (frameIsMap) flushAsync(); else flushSync();
     needFlush = false;
     frameIsMap = false;
+  }
+  // Idle phone traffic (including HID/AMS) does not count as navigation.
+  const bool navigating = idlePowerOffNavigationActive(
+      bleConnected && bleAuthed, inNav, cruiseOn, navDir == "A");
+  const bool interacting = pairOn || pairReq || callOn || touchDown || dragging || sliding;
+  if (idlePowerOffDue(&idlePowerOffTimer, millis(), navigating, interacting)) {
+    bool queued;
+    portENTER_CRITICAL(&mux);
+    queued = rxTail != rxHead;
+    portEXIT_CRITICAL(&mux);
+    if (!queued) idlePowerOffShutdown();
   }
   delay(mapNow ? 1 : 10);
 }

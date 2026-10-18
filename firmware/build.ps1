@@ -31,7 +31,9 @@ if($LASTEXITCODE -ne 0){throw "Arduino build failed ($LASTEXITCODE)"}
 $taskDest=Join-Path $taskRoot "dist/$Board/panel$PanelVariant"
 New-Item -ItemType Directory -Force $taskDest | Out-Null
 $taskLabel=if($Board -eq '175'){'1.75'}else{'1.85B'}
-$taskName="MotoNav_${taskLabel}_v7.12.0-hid_panel$PanelVariant"
+$taskVersion=[regex]::Match([IO.File]::ReadAllText((Join-Path $taskSketch 'MotoNav.ino')),'^#define FW_VERSION "v([^\"]+)"',[Text.RegularExpressions.RegexOptions]::Multiline).Groups[1].Value
+if(!$taskVersion){throw 'Cannot read firmware version'}
+$taskName="MotoNav_universal_${taskLabel}_v${taskVersion}_panel$PanelVariant"
 $taskApp=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.bin'))
 $taskMerged=[IO.File]::ReadAllBytes((Join-Path $taskOutput 'MotoNav.ino.merged.bin'))
 $taskLength=0x10000+$taskApp.Length
@@ -56,7 +58,7 @@ if($Board -eq '175') {
         $taskFilePath=Join-Path $taskDest $taskFileName
         $taskManifestFiles+=@{file=$taskFileName;bytes=(Get-Item -LiteralPath $taskFilePath).Length;sha256=(Get-FileHash -LiteralPath $taskFilePath -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
-    $taskManifest=@{firmware='7.12.0';board='Waveshare ESP32-S3-Touch-AMOLED-1.75';esp32Core='3.3.10';flashSize='16MB';partition='app3M_fat9M_16MB';verifiedApplicationOffset='0x10000';deviceTested=$false;files=$taskManifestFiles}
+    $taskManifest=@{firmware=$taskVersion;platform='universal';board='Waveshare ESP32-S3-Touch-AMOLED-1.75';esp32Core='3.3.10';flashSize='16MB';partition='app3M_fat9M_16MB';verifiedApplicationOffset='0x10000';deviceTested=$false;files=$taskManifestFiles}
     [IO.File]::WriteAllText((Join-Path $taskDest "${taskName}_manifest.json"),($taskManifest | ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))
 }
 Get-ChildItem -LiteralPath $taskDest -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize
