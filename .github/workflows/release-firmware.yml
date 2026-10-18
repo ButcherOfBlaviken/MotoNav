@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - firmware/RELEASE_VERSION
+      - firmware/tests/**
       - .github/workflows/release-firmware.yml
       - scripts/release-firmware.py
   workflow_dispatch:

@@ -1,3 +1,4 @@
+#include <stdint.h> // Arduino supplies these types in firmware; declare for host tests.
 #include "../boards/175/MotoNav/AppleMediaData.h"
 #include <cassert>
 #include <iostream>
