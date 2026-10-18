@@ -1,6 +1,6 @@
 # MotoNav
 
-Android / iOS 手机配合 ESP32-S3 圆屏的导航项目。当前 Android App 8.3.21，iOS App 0.13.7，微雪圆屏固件 7.12.0。
+Android / iOS 手机配合 ESP32-S3 圆屏的导航项目。当前 Android App 8.3.21，iOS App 0.13.8，微雪圆屏固件 7.12.0。
 
 iOS 工程已整合到 [ios/](ios/README.md)，包含 Xcode 工程、分享扩展、构建说明和功能对照。iOS 已移植高德截图底图、建筑处理和沿线离线地图；播放器支持和后台取图能力与 Android 存在差异，详见该说明。
 
@@ -9,6 +9,10 @@ iOS 工程已整合到 [ios/](ios/README.md)，包含 Xcode 工程、分享扩�
 ![MotoNav 圆屏摩托车导航模拟效果](docs/media/mockups/hero-simulation.png)
 
 **上图为 AI 模拟效果，非实机截图。** 手机负责定位、路线与数据处理，圆屏展示导航、天气和音乐控制信息。
+
+## iOS 0.13.8 到达动画修复（2026-10-18）
+
+修复 iOS 将“前方终点”当成真正到达、导致圆屏提前播放到达动画的问题；同时限制重复结束、手动退出和迟到回调。维护者认为这是一个比较重大的 bug，建议旧版用户更新。详见 [iOS 0.13.8 更新说明](docs/RELEASE-IOS-0.13.8.md)。新版 IPA 由 GitHub 的 macOS 构建流程生成，构建成功后出现在 Releases；仍需用自己的 Apple 账号签名安装。
 
 ## Android 8.3.21 重要更新（2026-10-18）
 
@@ -78,7 +82,7 @@ iPhone 新增圆屏 BLE HID 媒体按键，可向当前播放器发送播放/暂
 
 ## iPhone 安装
 
-从 [GitHub Releases](https://github.com/zyn950929/MotoNav/releases) 下载 `MotoNav-0.13.7-unsigned.ipa`，使用自己的 Apple 账号通过 Sideloadly 签名安装。详见 [安装与续签教程](docs/INSTALL-IOS.md)。
+从 [GitHub Releases](https://github.com/zyn950929/MotoNav/releases) 下载 `MotoNav-0.13.8-unsigned.ipa`，使用自己的 Apple 账号通过 Sideloadly 签名安装。详见 [安装与续签教程](docs/INSTALL-IOS.md)。
 
 ## Windows 一键打包
 

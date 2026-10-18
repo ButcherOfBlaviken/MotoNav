@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		562A8BDFD5FE84EC55914B53 /* NaviSessionCallbacks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA0D76EEBF01653D1E587E8 /* NaviSessionCallbacks.swift */; };
+		96EEC660FCE57B693CF21764 /* ArrivalPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43332154B324B9A7004CB3C3 /* ArrivalPolicy.swift */; };
 		B36EAB2701614C6B8182A8F4 /* BleBulkWriteQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = C36EAB2701614C6B8182A8F4 /* BleBulkWriteQueue.swift */; };
 		B25DEB2701614C6B8182A8F4 /* BleWritePacer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25DEB2701614C6B8182A8F4 /* BleWritePacer.swift */; };
 		A498DFFBC648AD34CB8F3920 /* BleCapabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = C509D74F9ABCA7DCA7EE9293 /* BleCapabilityProbe.swift */; };
@@ -72,6 +74,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		FEA0D76EEBF01653D1E587E8 /* NaviSessionCallbacks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NaviSessionCallbacks.swift; sourceTree = "<group>"; };
+		43332154B324B9A7004CB3C3 /* ArrivalPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrivalPolicy.swift; sourceTree = "<group>"; };
 		C36EAB2701614C6B8182A8F4 /* BleBulkWriteQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleBulkWriteQueue.swift; sourceTree = "<group>"; };
 		C25DEB2701614C6B8182A8F4 /* BleWritePacer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleWritePacer.swift; sourceTree = "<group>"; };
 		C509D74F9ABCA7DCA7EE9293 /* BleCapabilityProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleCapabilityProbe.swift; sourceTree = "<group>"; };
@@ -186,6 +190,8 @@
 				66C3696F54839CD45813F948 /* Settings.swift */,
 				B06991A4E6681422A044C310 /* Speech.swift */,
 				7E30F4D8B800F5F593B76481 /* NaviBridge.swift */,
+				FEA0D76EEBF01653D1E587E8 /* NaviSessionCallbacks.swift */,
+				43332154B324B9A7004CB3C3 /* ArrivalPolicy.swift */,
 				929DE07BFB6EF4EEB08632D5 /* RouteMap.swift */,
 				04C63477564D9DE7E1066725 /* AmapShare.swift */,
 				0E513753F4C1CA0A1F4CB5D2 /* MapFeeder.swift */,
@@ -392,6 +398,8 @@
 				ABBCC4AD2877914978EB58E7 /* Settings.swift in Sources */,
 				B88940BFDB14C57288B4528D /* Speech.swift in Sources */,
 				5990C5F0E5EAB70145D9379E /* NaviBridge.swift in Sources */,
+				562A8BDFD5FE84EC55914B53 /* NaviSessionCallbacks.swift in Sources */,
+				96EEC660FCE57B693CF21764 /* ArrivalPolicy.swift in Sources */,
 				10EFB4D9DE7D69DC0E92AA58 /* RouteMap.swift in Sources */,
 				49ABA841CBD5F506DEB37276 /* AmapShare.swift in Sources */,
 				34A5FC8DDF351DDDD344A543 /* MapFeeder.swift in Sources */,
@@ -449,7 +457,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.13.7;
+				MARKETING_VERSION = 0.13.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -532,7 +540,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.13.7;
+				MARKETING_VERSION = 0.13.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -557,7 +565,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.13.7;
+				MARKETING_VERSION = 0.13.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -585,7 +593,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.13.7;
+				MARKETING_VERSION = 0.13.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

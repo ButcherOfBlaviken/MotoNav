@@ -1,6 +1,6 @@
 # MotoNav iPhone 安装与续签
 
-适用于 GitHub Release 提供的 `MotoNav-0.13.7-unsigned.ipa`。支持 iOS 15.0 及以上的 iPhone。此文件是 arm64 真机 Release 构建，包含主应用及分享扩展，需用自己的 Apple 账号重新签名后安装。
+适用于 GitHub Release 提供的 `MotoNav-0.13.8-unsigned.ipa`。支持 iOS 15.0 及以上的 iPhone。此文件是 arm64 真机 Release 构建，包含主应用及分享扩展，需用自己的 Apple 账号重新签名后安装。
 
 ## 安装步骤
 

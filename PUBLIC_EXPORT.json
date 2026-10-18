@@ -17,9 +17,9 @@
   "simulationImages": 3,
   "mutedVideos": 3,
   "photos": 7,
-  "iosVersion": "0.13.7",
+  "iosVersion": "0.13.8",
   "iosBundleIdentifier": "com.example.motonav",
-  "iosReleaseBuildVerified": true,
+  "iosReleaseBuildVerified": false,
   "iosSideloadlyInstallVerified": false,
   "donationImageIncluded": false,
   "legacyGitHistorySanitized": false,
@@ -37,5 +37,6 @@
   "androidArrivalPolicyChecks": 45,
   "androidMapAndRidePolicyChecks": 34,
   "androidPersistenceChecks": 33,
-  "androidCrashRecoveryChecks": 7
+  "androidCrashRecoveryChecks": 7,
+  "iosArrivalFixDeviceTestVerified": false
 }

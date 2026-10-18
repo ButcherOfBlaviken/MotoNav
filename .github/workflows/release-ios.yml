@@ -17,6 +17,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Verify arrival lifecycle and callback sessions
+        run: |
+          swiftc ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift -o /tmp/arrival
+          /tmp/arrival
+          swiftc ios/MotoNav/ArrivalPolicy.swift ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift ios/tests/arrival-relay/main.swift -o /tmp/arrival-relay
+          /tmp/arrival-relay
       - name: Install locked iOS dependencies
         working-directory: ios
         run: |

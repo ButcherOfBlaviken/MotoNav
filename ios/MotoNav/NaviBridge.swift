@@ -74,6 +74,32 @@ final class NaviBridge: NSObject, ObservableObject {
 
     private var manager: AMapNaviDriveManager { AMapNaviDriveManager.sharedInstance() }
     private var attached = false
+    private let arrival = ArrivalPolicy()
+    private var sessionCallbacks: NaviSessionCallbacks?
+
+    // Each SDK delegate captures its own generation. Queued or retained old delegates
+    // cannot finish, restart, or publish guidance for a newer trip.
+    private func installCallbacks() {
+        let m = manager
+        if let old = sessionCallbacks?.asRepresentative { m.removeDataRepresentative(old) }
+        m.delegate = nil
+        let callbacks = NaviSessionCallbacks(bridge: self, token: arrival.generation)
+        sessionCallbacks = callbacks
+        m.delegate = callbacks.asDelegate
+        if let r = callbacks.asRepresentative { m.addDataRepresentative(r) }
+    }
+
+    func acceptsCallback(_ token: UInt64) -> Bool { arrival.acceptsCallbacks(token) }
+    func performCallback(_ token: UInt64, _ body: (NaviBridge) -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard arrival.acceptsCallbacks(token) else { return }
+        body(self)
+    }
+
+    private func invalidateArrival() {
+        arriveSeq += 1
+        showArrived = false
+    }
 
     private static let TICK = 0.2                   // 推算频率：每秒 5 次
     private static let MAX_PREDICT = 1.2            // 超过 1.2 秒没新数据就不再推算，减少急停时的误差
@@ -142,7 +168,9 @@ final class NaviBridge: NSObject, ObservableObject {
         if navigating || cruising { return }
         if attached {
             let m = manager
-            if let r = (self as AnyObject) as? AMapNaviDriveDataRepresentable { m.removeDataRepresentative(r) }
+            arrival.cancel(arrival.generation)
+            if let r = sessionCallbacks?.asRepresentative { m.removeDataRepresentative(r) }
+            sessionCallbacks = nil
             m.delegate = nil
             attached = false
         }
@@ -156,12 +184,9 @@ final class NaviBridge: NSObject, ObservableObject {
         if attached { return }
         attached = true
         let m = manager
-        // 见文件末尾说明：在运行时登记“我实现了高德这两个协议”，再把自己交给高德
-        class_addProtocol(NaviBridge.self, AMapNaviDriveManagerDelegate.self)
-        class_addProtocol(NaviBridge.self, AMapNaviDriveDataRepresentable.self)
-        let me = self as AnyObject
-        if let d = me as? AMapNaviDriveManagerDelegate { m.delegate = d }
-        if let r = me as? AMapNaviDriveDataRepresentable { m.addDataRepresentative(r) }
+        // Runtime protocol registration lives on the per-session callback relay.
+        arrival.preparePlan()
+        installCallbacks()
         m.allowsBackgroundLocationUpdates = true
         m.pausesLocationUpdatesAutomatically = false
         m.isUseInternalTTS = false              // 高德自己的播报关掉，文字交给我们念（播报时压低音乐）
@@ -208,6 +233,8 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 不去这个目的地了（换目的地）
     func clearPlan() {
         if navigating { return }
+        arrival.cancel(arrival.generation)
+        invalidateArrival()
         MapFeeder.shared.onNaviEnd()
         planSeq += 1
         destLat = .nan; destLng = .nan
@@ -223,6 +250,9 @@ final class NaviBridge: NSObject, ObservableObject {
         planFailed = false
         MapFeeder.shared.onNaviEnd()
         if cruising { stopCruise() }
+        arrival.preparePlan()
+        invalidateArrival()
+        installCallbacks()
         guard let end = AMapNaviPoint.location(withLatitude: CGFloat(destLat), longitude: CGFloat(destLng)) else { return }
         planSeq += 1
         calculating = true
@@ -307,11 +337,18 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     func start(emulate: Bool) {
-        guard routeReady else { return }
+        guard routeReady, !navigating else { return }
+        attach()
         if cruising { endCruiseQuietly() }
+        // Stop a previous arrival hold before attaching a new trip's callbacks.
+        arrival.cancel(arrival.generation)
+        manager.stopNavi()
         if selectedRouteID >= 0 { _ = manager.selectNaviRoute(withRouteID: selectedRouteID) }
         resetState()
-        showArrived = false; arriveSeq += 1
+        invalidateArrival()
+        let token = arrival.begin(simulation: emulate)
+        installCallbacks()
+        navigating = true // Arm before start: SDK callbacks may be synchronous.
         BleLink.shared.send("C")
         MapFeeder.shared.onNaviStart()
         let me = myPosition()
@@ -320,13 +357,15 @@ final class NaviBridge: NSObject, ObservableObject {
         emulating = emulate; emuPaused = false
         if emulate { emuSpeed = 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
         let ok = emulate ? manager.startEmulatorNavi() : manager.startGPSNavi()
-        if ok {
-            navigating = true
+        if ok && arrival.acceptsGuidance(token) {
             info = emulate ? "模拟导航中" : "导航中"
             tick?.invalidate()
-            tick = Timer.scheduledTimer(withTimeInterval: NaviBridge.TICK, repeats: true) { [weak self] _ in self?.onTick() }
-        } else {
-            info = "导航没能开始"
+            tick = Timer.scheduledTimer(withTimeInterval: NaviBridge.TICK, repeats: true) { [weak self] _ in
+                guard let self = self, self.arrival.acceptsGuidance(token) else { return }
+                self.onTick()
+            }
+        } else if !ok && arrival.acceptsGuidance(token) {
+            finish("C", "导航没能开始")
         }
     }
 
@@ -346,16 +385,22 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     func stop() {
+        // stopNavi may emit emulator-end immediately. Close the gate first.
+        arrival.cancel(arrival.generation)
         manager.stopNavi()
         finish("C", "已退出导航")
     }
 
-    private func finish(_ msg: String, _ text: String) {
+    private func finish(_ msg: String, _ text: String, event: ArrivalPolicy.EndEvent? = nil) {
+        let token = arrival.generation
+        let arrived = msg == "A,0"
+        if arrived {
+            guard let event = event, arrival.complete(token, event: event) else { return }
+        } else { arrival.cancel(token) }
         MapFeeder.shared.onNaviEnd()
         ShareGuide.shared.stop()
         tick?.invalidate(); tick = nil
         arriveSeq += 1
-        let arrived = msg.hasPrefix("A")
         showArrived = arrived                       // 先设这个再设 navigating：导航画面据此决定马上关还是等 4 秒
         navigating = false
         info = text
@@ -366,7 +411,8 @@ final class NaviBridge: NSObject, ObservableObject {
             // 和安卓一样：圆屏显示“已到达”4 秒，然后清屏回到待机（测速牌、车道、电子眼这些都清掉）
             let seq = arriveSeq
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-                guard let self = self, seq == self.arriveSeq, !self.navigating, !self.cruising else { return }
+                guard let self = self, seq == self.arriveSeq, self.arrival.canClearArrival(token),
+                      !self.navigating, !self.cruising else { return }
                 self.manager.stopNavi()
                 self.resetState()
                 self.showArrived = false
@@ -397,7 +443,7 @@ final class NaviBridge: NSObject, ObservableObject {
         case 4, 65: return "SL"         // 左前方、靠左
         case 5, 66: return "SR"         // 右前方、靠右
         case 8, 19, 24: return "U"      // 掉头
-        case 15: return "A"             // 到达目的地
+        case 15: return "A"             // 前方终点提示；不是已到达，发往圆屏时转换为 S
         default: return "S"             // 直行及其他
         }
     }
@@ -409,6 +455,7 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     private func pushNav(_ dir: String, _ dist: Int, real: Bool) {
+        guard arrival.acceptsGuidance(arrival.generation) else { return }
         let d = roundDist(dist)
         // 同一方向下，推算值不让数字往回跳（真实数据来了允许小幅修正）
         if dir == shownDir && shownDist >= 0 && d > shownDist {
@@ -416,11 +463,14 @@ final class NaviBridge: NSObject, ObservableObject {
         }
         shownDir = dir; shownDist = d
         uiDir = dir; uiDist = d
-        send(curAngle != nil ? "\(dir),\(d),\(curAngle!)" : "\(dir),\(d)")
+        // Reserve wire A,0 for a real terminal callback, even when prediction reaches zero.
+        let wireDir = ArrivalPolicy.wireDirection(dir)
+        send(curAngle != nil ? "\(wireDir),\(d),\(curAngle!)" : "\(wireDir),\(d)")
     }
 
     /// 两次真实数据之间按车速推算距离；顺便检查测速提示是否过期、每分钟刷新路况
     private func onTick() {
+        guard arrival.acceptsGuidance(arrival.generation) else { return }
         let el = Date().timeIntervalSince(baseAt)
         if speedMps > 0.5 && el < NaviBridge.MAX_PREDICT && !curDir.isEmpty {
             pushNav(curDir, max(0, Int((Double(baseDist) - speedMps * el).rounded())), real: false)
@@ -489,7 +539,8 @@ final class NaviBridge: NSObject, ObservableObject {
 
     private func updateTexts(dir: String, curRoad: String, nextRoad: String, remainM: Int, remainS: Int, lights: Int) {
         let road: String
-        if dir == "S" && !curRoad.isEmpty { road = "沿 \(curRoad) 直行" }
+        if dir == "A" { road = "前方为目的地" }
+        else if dir == "S" && !curRoad.isEmpty { road = "沿 \(curRoad) 直行" }
         else if !nextRoad.isEmpty { road = "进入 \(nextRoad)" }
         else { road = "" }
         uiRoad = road
@@ -741,6 +792,11 @@ final class NaviBridge: NSObject, ObservableObject {
         if navigating { return "导航中不能开巡航，先退出导航" }
         if cruising { return nil }
         attach()
+        arrival.cancel(arrival.generation)
+        manager.stopNavi()
+        invalidateArrival()
+        arrival.beginCruise()
+        installCallbacks()
         resetState()
         MapFeeder.shared.onNaviStart()
         manager.detectedMode = .cameraAndSpecialRoad          // 电子眼和特殊道路设施都提醒
@@ -766,6 +822,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     private func endCruiseQuietly() {
         if !cruising { return }
+        arrival.cancel(arrival.generation)
         cruising = false
         cruiseIdle.stop()
         MapFeeder.shared.onNaviEnd()
@@ -872,7 +929,8 @@ enum FacTypes {
 // MARK: - 高德回调
 // 这些回调都写明了 Objective-C 方法名（@objc(...)），高德按这个名字找到并调用。
 // 注意这里故意不写 “: AMapNaviDriveManagerDelegate” —— 写了的话 Swift 会要求方法名和 SDK 的 Swift 名字一字不差，
-// 否则报 “Objective-C method ... provided by method ...” 冲突。协议是在 attach() 里用 class_addProtocol 运行时登记的。
+// 否则报 “Objective-C method ... provided by method ...” 冲突。协议在 NaviSessionCallbacks 中登记，
+// 由带有会话编号的代理在主线程检查后转发；这里不再直接注册成 SDK 代理。
 
 extension NaviBridge {
 
@@ -935,10 +993,10 @@ extension NaviBridge {
     func mnSoundPlaying(_ m: AMapNaviDriveManager) -> Bool { Speech.shared.isSpeaking }
 
     @objc(driveManagerOnArrivedDestination:)
-    func mnArrived(_ m: AMapNaviDriveManager) { finish("A,0", "已到达目的地") }
+    func mnArrived(_ m: AMapNaviDriveManager) { finish("A,0", "已到达目的地", event: .destination) }
 
     @objc(driveManagerDidEndEmulatorNavi:)
-    func mnEmuEnd(_ m: AMapNaviDriveManager) { finish("A,0", "模拟导航结束") }
+    func mnEmuEnd(_ m: AMapNaviDriveManager) { finish("A,0", "模拟导航结束", event: .emulator) }
 
     @objc(driveManagerNeedRecalculateRouteForYaw:)
     func mnYaw(_ m: AMapNaviDriveManager) { setRerouting(true); ShareGuide.shared.onYaw() }
@@ -966,7 +1024,7 @@ extension NaviBridge {
     // 每秒一次的导航信息
     @objc(driveManager:updateNaviInfo:)
     func mnNaviInfo(_ m: AMapNaviDriveManager, info n: AMapNaviInfo?) {
-        guard let n = n else { return }
+        guard arrival.acceptsGuidance(arrival.generation), let n = n else { return }
         let icon = n.iconType.rawValue
         let dir = NaviBridge.iconToDir(icon)
         let step = n.currentSegmentIndex
@@ -1002,7 +1060,7 @@ extension NaviBridge {
     // 位置和车速 → 圆屏车速、小地图位置
     @objc(driveManager:updateNaviLocation:)
     func mnLocation(_ m: AMapNaviDriveManager, location l: AMapNaviLocation?) {
-        guard let l = l, !cruising else { return }     // 巡航时用手机定位（onCruiseLocation）
+        guard arrival.acceptsGuidance(arrival.generation), let l = l, !cruising else { return }     // 巡航时用手机定位（onCruiseLocation）
         let kmh = max(0, l.speed)
         speedKmhNow = kmh
         speedMps = emuPaused ? 0 : Double(kmh) / 3.6

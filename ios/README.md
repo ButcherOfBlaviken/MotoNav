@@ -1,8 +1,24 @@
-# MotoNav iOS v0.13.7
+# MotoNav iOS v0.13.8
 
 与 Android 共用本仓库 1.75 英寸圆屏固件及 BLE 协议。原始 iOS 工程来自用户提供的 MotoNav-iOS，整合后的源代码保存在此目录；原目录未修改。
 
 预编译 IPA 安装请看 [Sideloadly 安装教程](../docs/INSTALL-IOS.md)。公开版本使用通用包名，地图 Key 按重签后的实际 Bundle ID 申请。
+
+## 0.13.8 到达动画修复
+
+“前方终点”图标继续作为正常导航发送，不再触发圆屏到达动画。只有当前导航真正到达，或当前模拟导航确实结束，才发送一次到达指令。手动退出先关闭回调入口，重复结束与旧会话回调会被忽略；旧的到达清理计时也不会清除新导航或巡航。
+
+本次不移植 Android 的轨迹、收藏等新功能。详情和验证边界见 [更新说明](../docs/RELEASE-IOS-0.13.8.md)。
+
+Mac 上运行本次到达逻辑与回调检查：
+
+```sh
+swiftc ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift -o /tmp/motonav-arrival
+/tmp/motonav-arrival
+swiftc ios/MotoNav/ArrivalPolicy.swift ios/MotoNav/NaviSessionCallbacks.swift \
+  ios/tests/arrival-relay/SDKStubs.swift ios/tests/arrival-relay/main.swift -o /tmp/motonav-arrival-relay
+/tmp/motonav-arrival-relay
+```
 
 ## 构建与安装
 
