@@ -78,6 +78,8 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".RideHistoryActivity" android:exported="false" />
+
         <!-- v3.0 导航页 -->
         <activity
             android:name=".NavActivity"

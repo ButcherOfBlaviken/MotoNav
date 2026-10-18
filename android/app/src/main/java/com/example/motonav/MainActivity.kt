@@ -150,7 +150,7 @@ import androidx.appcompat.app.AppCompatActivity
  *         设置分成「圆屏显示 / 导航语音 / 圆屏设置 / 地图 Key」四组，可折叠，收起时显示一行当前设置；
  *         调试信息、测试按钮、屏幕速度、地图来源、帧率等挪进「开发者选项」，默认隐藏（连点 5 下版本号打开）
  */
-const val APP_VERSION = "v8.3.19"
+const val APP_VERSION = "v8.3.21"
 
 class MainActivity : AppCompatActivity() {
     // ---------------- 配色（罪恶都市夜景：深紫黑底、霓虹粉、青色） ----------------
@@ -201,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(statusCard())
         root.addView(searchCard())                     // v6.3 搜索目的地直接放在首页
         root.addView(cruiseCard())
+        root.addView(rideCard())
         root.addView(sectionTitle("设置"))
         root.addView(section("map", "🗺", "圆屏显示", { mapSummary() }) { mapSection(it) })
         root.addView(section("voice", "🔊", "导航语音", { voiceSummary() }) { voiceSection(it) })   // v3.8
@@ -325,6 +326,16 @@ class MainActivity : AppCompatActivity() {
 
         fun showHistory() {
             hist.removeAllViews()
+            val favorites = FavoritePlaces.load(this)
+            hist.addView(label("★ 常用目的地", 14f, CYAN, bold = true).apply { setPadding(0, dp(12), 0, dp(2)) })
+            if (favorites.isEmpty()) hist.addView(label("在路线规划页点「收藏到常用目的地」添加", 12f, SUB))
+            favorites.take(4).forEach { p ->
+                hist.addView(placeRow(p.name, p.addr) { openPlan(p.name, p.addr, p.lat, p.lng) })
+            }
+            hist.addView(label("管理常用目的地（${favorites.size}/50）", 13f, CYAN).apply {
+                minHeight = dp(44); gravity = Gravity.CENTER_VERTICAL
+                setOnClickListener { FavoritePlacesUi.manage(this@MainActivity, { showHistory() }) { p -> openPlan(p.name,p.addr,p.lat,p.lng) } }
+            })
             val h = NavHistory.load(this).take(5)
             if (h.isEmpty()) return
             hist.addView(label("最近去过", 12f, SUB).apply { setPadding(0, dp(12), 0, dp(2)) })
@@ -575,14 +586,24 @@ class MainActivity : AppCompatActivity() {
 
             offlineLabel.text=MapFeeder.offlineStatus()
             offlineLabel.visibility=if (offlineLabel.text.isEmpty()) View.GONE else View.VISIBLE
-            val mi = MapFeeder.infoText()
-            mapWarn.text = if (MapFeeder.enabled && mi.contains("失败")) "⚠ 小地图下载失败：检查网络和天地图 key" else ""
-            mapWarn.visibility = if (mapWarn.text.isEmpty()) View.GONE else View.VISIBLE
+            mapWarn.text = MapFeeder.loadingStatus()
+            mapWarn.visibility = View.VISIBLE
         }
         return wrapMargin(card)
     }
 
     // ================= v8.2 可折叠的设置分组 =================
+
+    private fun rideCard(): View {
+        val box = card()
+        box.addView(label("骑行轨迹",17f,TEXT,bold=true))
+        val status = label(RideRecorder.status(),13f,CYAN)
+        box.addView(status)
+        box.addView(label("真实导航、巡航自动记录，模拟导航不记录；保存在本机，可导出 GPX。",12f,SUB))
+        box.addView(pillButton("查看轨迹 / 记录设置",PURPLE) { startActivity(Intent(this,RideHistoryActivity::class.java)) },lpMatch(top=8))
+        refreshers += { status.text=RideRecorder.status() }
+        return wrapMargin(box)
+    }
 
     private val uiPrefs by lazy { getSharedPreferences("ui", MODE_PRIVATE) }
 

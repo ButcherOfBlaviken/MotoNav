@@ -555,6 +555,15 @@ object BleLink {
 
     fun bulkPending(): Boolean = synchronized(lock) { bulkQ.isNotEmpty() }
 
+    /** Submission progress only; firmware ACK is the sole proof of a received map. */
+    fun bulkProgress(type: Int, id: Int): Int? = synchronized(lock) {
+        val packet = bulkQ.firstOrNull { it.type==type && it.data.size>=15 && (it.data[2].toInt() and 255)==(id and 255) }?.data
+            ?: return@synchronized null
+        val count = (packet[3].toInt() and 255) or ((packet[4].toInt() and 255) shl 8)
+        val next = (packet[5].toInt() and 255) or ((packet[6].toInt() and 255) shl 8)
+        if (count<=0) null else (next*100/count).coerceIn(0,99)
+    }
+
     /** 把图片切片放进队列（需持有 lock） */
     private fun enqueueImage(slot: Int, img: Img?) {
         // 同一栏还没发出去的旧图片片段全部作废

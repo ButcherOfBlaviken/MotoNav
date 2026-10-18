@@ -38,8 +38,8 @@ android {
         applicationId = providers.gradleProperty("personalApplicationId").getOrElse("com.example.motonav")
         minSdk = 26
         targetSdk = 35
-        versionCode = 115
-        versionName = "8.3.19"
+        versionCode = 117
+        versionName = "8.3.21"
         ndk { abiFilters += setOf("arm64-v8a") }
     }
 

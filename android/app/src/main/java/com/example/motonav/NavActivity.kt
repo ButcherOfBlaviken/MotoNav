@@ -57,6 +57,7 @@ class NavActivity : AppCompatActivity() {
 
     private lateinit var root: FrameLayout
     private lateinit var turnCard: LinearLayout
+    private lateinit var mapStatus: TextView
     private lateinit var arrowBox: FrameLayout
     private lateinit var arrow: TurnArrowView
     private lateinit var distText: TextView
@@ -132,6 +133,8 @@ class NavActivity : AppCompatActivity() {
         }, FrameLayout.LayoutParams(-1, dp(150)))
 
         buildTurnCard()
+        mapStatus = TextView(this).apply { textSize=11f; setTextColor(S.SUB); maxLines=3; setPadding(0,dp(6),0,0) }
+        turnCard.addView(mapStatus)
         buildSide()
         buildBottomBar()
         buildArrived()
@@ -233,8 +236,18 @@ class NavActivity : AppCompatActivity() {
             ShareGuide.naviType = if (emulate) 2 else 1               // v4.5
             Refl.call(n, "setMultipleRouteNaviMode", ShareGuide.route?.isTravel != true)
             if (emulate) n.setEmulatorNaviSpeed(emuSpeeds[emuIdx])
-            n.startNavi(if (emulate) 2 else 1)      // 1 = 真实 GPS 导航，2 = 模拟导航
+            if (!NaviBridge.beginNavigation(emulate)) {
+                Toast.makeText(this,"导航会话已结束，请返回重新规划路线",Toast.LENGTH_LONG).show()
+                return
+            }
+            if (n.startNavi(if (emulate) 2 else 1)) {
+                RideRecorder.start("导航",destName,emulate)
+            } else {
+                NaviBridge.navigationStartFailed()
+                Toast.makeText(this,"导航启动失败，请返回重新规划路线",Toast.LENGTH_LONG).show()
+            }
         } catch (e: Exception) {
+            NaviBridge.navigationStartFailed()
             Toast.makeText(this, "导航启动失败：${e.message}", Toast.LENGTH_LONG).show()
         }
     }
@@ -482,6 +495,7 @@ class NavActivity : AppCompatActivity() {
     }
 
     private fun update() {
+        mapStatus.text = MapFeeder.loadingStatus() + "\n" + if (emulate) "模拟导航 · 不记录轨迹" else RideRecorder.status()
         val B = NaviBridge
         // v4.9 更快路线提示
         if (B.uiSuggestMin > 0) {
@@ -509,7 +523,7 @@ class NavActivity : AppCompatActivity() {
             sp.setSpan(AbsoluteSizeSpan(dp(17)), num.length, sp.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             distText.text = sp
             roadText.text = when {
-                dir == "A" -> "到达 ${destName.ifBlank { "目的地" }}"
+                dir == "A" -> "前方终点 · ${destName.ifBlank { "目的地" }}"
                 dir == "S" && B.uiCurRoad.isNotBlank() -> "沿 ${B.uiCurRoad} 直行"
                 B.uiNextRoad.isNotBlank() -> "进入 ${B.uiNextRoad}"
                 else -> "前方路口"

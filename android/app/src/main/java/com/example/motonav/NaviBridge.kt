@@ -97,6 +97,7 @@ object NaviBridge {
 
     // ---- 推算用的状态（只在主线程里读写）----
     private var active = false
+    private val arrivalSession = ArrivalPolicy()
     private var curDir = ""
     private var curAngle: Int? = null          // v1.8 当前路口的实际转弯角度（度），算不出来时为 null
     private var angleKey = ""                  // 缓存：哪条路线的哪个路段
@@ -153,18 +154,20 @@ object NaviBridge {
     fun attach(context: Context): AMapNavi? {
         val c = context.applicationContext
         endCruiseQuietly()                                                       // v4.7 开始导航前先结束巡航
+        resetState()
+        val epoch = arrivalSession.prepare()
         try {
             val n = AMapNavi.getInstance(c)
             listener?.let { old -> try { navi?.removeAMapNaviListener(old) } catch (_: Exception) {} }
-            val l = makeNaviListener()
+            val l = makeNaviListener(epoch)
             n.addAMapNaviListener(l)
             navi = n
             listener = l
         } catch (e: Exception) {
+            arrivalSession.cancel(epoch)
             lastInfo = "导航初始化失败：${e.message}"
             return null
         }
-        resetState()
         MapFeeder.onNaviStart()
         usingComponent = false
         return navi
@@ -172,10 +175,27 @@ object NaviBridge {
 
     /** v3.0 退出自己的导航界面：停止导航，圆屏回到待机 */
     fun exitNavi() {
+        val epoch = arrivalSession.generation()
+        // stopNavi may synchronously emit onEndEmulatorNavi. Close before asking the SDK to stop.
+        arrivalSession.cancel(epoch)
         try { navi?.stopNavi() } catch (_: Exception) {}
         ShareGuide.stop()                                                        // v4.5
-        handler.post { resetState() }
-        finish("C", "已退出导航")
+        handler.post { if (arrivalSession.isCurrent(epoch)) resetState() }
+        finish("C", "已退出导航", epoch)
+    }
+
+    /** Arm before startNavi so its synchronous callbacks belong to a running trip. */
+    fun beginNavigation(emulate: Boolean): Boolean {
+        val started=arrivalSession.begin(arrivalSession.generation(),emulate)
+        if(started) android.util.Log.i("MotoNavArrival","begin session=${arrivalSession.generation()} simulation=$emulate")
+        return started
+    }
+
+    fun navigationStartFailed() {
+        arrivalSession.cancel(arrivalSession.generation())
+        RideRecorder.stop()
+        active=false
+        handler.removeCallbacks(tick)
     }
 
     /** 打开高德原版导航组件：起点默认是“我的位置”，在组件里搜索目的地 */
@@ -286,7 +306,7 @@ object NaviBridge {
     // ================= 转向和距离 =================
 
     /** 高德给了一次导航信息（切到主线程处理） */
-    private fun onNaviInfo(info: NaviInfo) {
+    private fun onNaviInfo(info: NaviInfo, epoch: Long) {
         val icon = info.iconType
         val raw = info.curStepRetainDistance
         val step = info.curStep
@@ -296,6 +316,7 @@ object NaviBridge {
         val remainS = info.pathRetainTime
         val lights = info.routeRemainLightCount
         handler.post {
+            if (!arrivalSession.acceptsGuidance(epoch)) return@post
             val t = now()
             if (lastUpdateAt != 0L) {
                 lastGap = (t - lastUpdateAt) / 1000.0
@@ -305,6 +326,7 @@ object NaviBridge {
                 }
             }
             lastUpdateAt = t
+            if(icon==15 && curDir!="A") android.util.Log.i("MotoNavArrival","destination-ahead session=$epoch remaining=$remainM stepDistance=$raw wire=S")
             curDir = iconToDir(icon)
             val path = navi?.naviPath
             val key = "${path?.pathid}:$step:$icon"
@@ -349,7 +371,7 @@ object NaviBridge {
     /** 两次真实数据之间按车速推算距离；顺便检查测速提示是否过期 */
     private val tick = object : Runnable {
         override fun run() {
-            if (!active) return
+            if (!active || !arrivalSession.acceptsGuidance(arrivalSession.generation())) return
             val elapsed = (now() - baseAt) / 1000.0
             if (speed > 0.5 && elapsed < MAX_PREDICT_S) {
                 val est = max(0, (baseDist - speed * (elapsed + leadS())).roundToInt())        // v7.2 加提前量
@@ -363,6 +385,7 @@ object NaviBridge {
     }
 
     private fun pushNav(dir: String, dist: Int, fromRealData: Boolean) {
+        if (!arrivalSession.acceptsGuidance(arrivalSession.generation())) return
         val d = roundDist(dist)
         // 同一方向下，推算值不让数字往回跳（真实数据来了允许小幅修正）
         if (dir == shownDir && shownDist >= 0 && d > shownDist) {
@@ -371,7 +394,9 @@ object NaviBridge {
         shownDir = dir
         shownDist = d
         uiDir = dir; uiDist = d                                                  // v3.0
-        send(if (curAngle != null) "$dir,$d,$curAngle" else "$dir,$d")
+        // Keep the destination flag on the phone, but reserve wire A,0 for actual completion.
+        val wireDir=ArrivalPolicy.guidanceDirection(dir)
+        send(if (curAngle != null) "$wireDir,$d,$curAngle" else "$wireDir,$d")
     }
 
     private fun send(msg: String) {
@@ -392,14 +417,21 @@ object NaviBridge {
         if (kmh in 1..250 && kmh > tripMaxKmh) tripMaxKmh = kmh
     }
 
-    private fun finish(msg: String, info: String) {
-        if (msg.startsWith("A")) uiArrived = true                               // v3.0
-        if (msg.startsWith("A") && tripStartAt > 0L) {
-            // v7.9 先把行程统计发给圆屏，到达特效里显示："#O米/分钟/最高车速"（不带逗号，旧固件会忽略）
-            val min = ((SystemClock.elapsedRealtime() - tripStartAt) / 60000L).toInt()
-            BleLink.sendEvent("#O${tripMeters.roundToInt()}/$min/$tripMaxKmh")
-        }
+    private fun finish(msg: String, info: String, epoch: Long = arrivalSession.generation()) {
         handler.post {
+            if (!arrivalSession.isCurrent(epoch)) return@post
+            val arrived=msg.startsWith("A")
+            if (arrived) {
+                if (!arrivalSession.arrive(epoch)) return@post
+                android.util.Log.i("MotoNavArrival","arrived session=$epoch event=$info wire=A,0")
+                uiArrived=true
+                if (tripStartAt>0L) {
+                    val min=((SystemClock.elapsedRealtime()-tripStartAt)/60000L).toInt()
+                    BleLink.sendEvent("#O${tripMeters.roundToInt()}/$min/$tripMaxKmh")
+                }
+            } else arrivalSession.cancel(epoch)
+            RideRecorder.stop()
+            ShareGuide.stop()
             active = false
             handler.removeCallbacks(tick)
             lastInfo = info
@@ -413,6 +445,7 @@ object NaviBridge {
     private fun updateTexts(dir: String, curRoad: String, nextRoad: String,
                             remainM: Int, remainS: Int, lights: Int) {
         val road = when {
+            dir == "A" -> "前方为目的地"
             dir == "S" && curRoad.isNotBlank() -> "沿 $curRoad 直行"
             nextRoad.isNotBlank() -> "进入 $nextRoad"
             else -> ""
@@ -525,12 +558,13 @@ object NaviBridge {
 
     // ================= v1.7：车速 =================
 
-    private fun onLocation(loc: AMapNaviLocation) {
+    private fun onLocation(loc: AMapNaviLocation, epoch: Long) {
         val kmh = loc.speed.roundToInt().coerceAtLeast(0)
         speedKmhNow = kmh
         uiSpeed = kmh                                                            // v3.0
         val c = loc.coord
         val receivedAt = now()
+        val receivedWall = System.currentTimeMillis()
         val fixStamp = loc.time ?: 0L
         val idleSpeed = loc.speed.toDouble()
         val idleLat = c?.latitude ?: Double.NaN
@@ -538,7 +572,9 @@ object NaviBridge {
         val idleAccuracy = loc.accuracy.toDouble()
         if (c != null) Brightness.updateLocation(c.latitude, c.longitude)
         handler.post {
+            if (!arrivalSession.isOpen(epoch)) return@post
             if (cruising) cruiseIdle.onFix(receivedAt, fixStamp, idleSpeed, idleLat, idleLng, idleAccuracy)
+            RideRecorder.onFix(idleLat,idleLng,fixStamp,receivedWall,idleAccuracy,idleSpeed)
             if (c != null) {
                 myLat = c.latitude; myLng = c.longitude
                 if (active) addTrip(c.latitude, c.longitude, kmh)                 // v7.9
@@ -722,27 +758,35 @@ object NaviBridge {
 
     // ---- 下面用“动态代理”只实现我们关心的几个回调，其余回调自动忽略 ----
 
-    private fun makeNaviListener(): AMapNaviListener =
+    private fun makeNaviListener(epoch: Long): AMapNaviListener =
         Proxy.newProxyInstance(
             AMapNaviListener::class.java.classLoader,
             arrayOf(AMapNaviListener::class.java)
         ) { proxy, method, args ->
             try {
+                if (method.name !in listOf("hashCode","equals","toString") && !arrivalSession.isOpen(epoch))
+                    return@newProxyInstance defaultValue(method.returnType)
                 when (method.name) {
-                    "onNaviInfoUpdate" -> (args?.getOrNull(0) as? NaviInfo)?.let { onNaviInfo(it) }
-                    "onLocationChange" -> (args?.getOrNull(0) as? AMapNaviLocation)?.let { onLocation(it) }
+                    "onStartNavi" -> if (usingComponent) {
+                        val type = (args?.getOrNull(0) as? Number)?.toInt() ?: 0
+                        handler.post {
+                            if (arrivalSession.begin(epoch,type!=1)) RideRecorder.start("导航","导航组件",type!=1)
+                        }
+                    }
+                    "onNaviInfoUpdate" -> (args?.getOrNull(0) as? NaviInfo)?.let { onNaviInfo(it,epoch) }
+                    "onLocationChange" -> (args?.getOrNull(0) as? AMapNaviLocation)?.let { onLocation(it,epoch) }
                     "updateCameraInfo" -> onCameras(args?.getOrNull(0) as? Array<*>)
                     "showLaneInfo" -> onLaneInfo(args)
                     "hideLaneInfo" -> onLaneHide()
-                    "onArriveDestination" -> finish("A,0", "已到达目的地")
-                    "onEndEmulatorNavi" -> finish("A,0", "模拟导航结束")
+                    "onArriveDestination" -> finish("A,0", "已到达目的地",epoch)
+                    "onEndEmulatorNavi" -> if (arrivalSession.isSimulation(epoch)) finish("A,0", "模拟导航结束",epoch)
                     // v7.9 到达自己加的途经点：圆屏放 3 秒短特效
                     "onArrivedWayPoint" -> if (realWaypoints) BleLink.sendEvent("#J")
                     // v3.8 “手机系统语音”模式：高德把播报文字交给我们念；v5.1 高德自己念时用它来压低音乐
                     "onGetNavigationText" -> NaviVoice.onNaviText(args?.lastOrNull { it is String } as? String, usingComponent)
                     // v3.0 算路结果交给选路线页面
-                    "onCalculateRouteSuccess" -> { val cb = routeCallback; val a = args?.getOrNull(0); handler.post { cb?.invoke(true, a); setRerouting(false); ShareGuide.onCalcDone(true) } }
-                    "onCalculateRouteFailure" -> { val cb = routeCallback; val a = args?.getOrNull(0); handler.post { cb?.invoke(false, a); setRerouting(false); ShareGuide.onCalcDone(false) } }
+                    "onCalculateRouteSuccess" -> { val cb = routeCallback; val a = args?.getOrNull(0); handler.post { if (arrivalSession.isOpen(epoch)) { cb?.invoke(true, a); setRerouting(false); ShareGuide.onCalcDone(true) } } }
+                    "onCalculateRouteFailure" -> { val cb = routeCallback; val a = args?.getOrNull(0); handler.post { if (arrivalSession.isOpen(epoch)) { cb?.invoke(false, a); setRerouting(false); ShareGuide.onCalcDone(false) } } }
                     // v4.5 偏航：按分享路线导航时，高德重算完我们再按原路线重新规划；v4.9 圆屏显示“重新规划中”
                     "onReCalculateRouteForYaw" -> handler.post { setRerouting(true); ShareGuide.onYaw() }
                     "onReCalculateRouteForTrafficJam" -> handler.post { setRerouting(true) }
@@ -762,15 +806,16 @@ object NaviBridge {
             defaultValue(method.returnType)
         } as AMapNaviListener
 
-    private fun makePageCallback(): INaviInfoCallback =
+    private fun makePageCallback(epoch: Long = arrivalSession.generation()): INaviInfoCallback =
         Proxy.newProxyInstance(
             INaviInfoCallback::class.java.classLoader,
             arrayOf(INaviInfoCallback::class.java)
         ) { proxy, method, args ->
             when (method.name) {
                 "onExitPage" -> {
-                    handler.post { resetState() }
-                    finish("C", "已退出导航")
+                    arrivalSession.cancel(epoch)
+                    handler.post { if (arrivalSession.isCurrent(epoch)) resetState() }
+                    finish("C", "已退出导航",epoch)
                 }
                 "hashCode" -> return@newProxyInstance System.identityHashCode(proxy)
                 "equals" -> return@newProxyInstance (proxy === args?.getOrNull(0))
@@ -915,6 +960,7 @@ object NaviBridge {
         if (!Refl.call(n, "startAimlessMode", 3).first) return "这个版本的高德 SDK 不支持巡航模式"
         cruiseIdle.start(now())
         cruising = true
+        RideRecorder.start("巡航","巡航")
         cruiseRaw = "巡航已开始，等高德发来数据…"
         lastInfo = "巡航中"
         BleLink.send("#z,1")
@@ -926,15 +972,18 @@ object NaviBridge {
     /** 结束巡航，圆屏回到首页 */
     fun stopCruise() {
         if (!cruising) return
+        val epoch=arrivalSession.generation()
         endCruiseQuietly()
-        handler.post { resetState() }
+        handler.post { if (arrivalSession.isCurrent(epoch)) resetState() }
         BleLink.send("C")
         lastInfo = "巡航已结束"
     }
 
     private fun endCruiseQuietly() {
         if (!cruising) return
+        arrivalSession.cancel(arrivalSession.generation())
         cruising = false
+        RideRecorder.stop()
         cruiseIdle.stop()
         handler.removeCallbacks(cruiseTick)
         Refl.call(navi, "stopAimlessMode")

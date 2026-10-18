@@ -624,6 +624,13 @@ class RoutePlanActivity : AppCompatActivity() {
         top.addView(hwChip, LinearLayout.LayoutParams(-2, dp(32)).apply { leftMargin = dp(8) })
         top.addView(emuChip, LinearLayout.LayoutParams(-2, dp(32)).apply { leftMargin = dp(6) })
         sheet.addView(top)
+        favoriteButton = TextView(this).apply {
+            textSize = 13f; setTextColor(S.CYAN); gravity = Gravity.CENTER_VERTICAL; minHeight = dp(40)
+            setOnClickListener {
+                if (RideTrackMath.valid(destLat,destLng)) FavoritePlacesUi.save(this@RoutePlanActivity,destName,destAddr,destLat,destLng) { updateFavoriteButton() }
+            }
+        }
+        sheet.addView(favoriteButton,LinearLayout.LayoutParams(-1,-2))
         // v4.9 途经点一行：“途经：A → B”  [+ 途经点] [清除]
         viaRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         viaText = TextView(this).apply {
@@ -702,6 +709,11 @@ class RoutePlanActivity : AppCompatActivity() {
         }
     }
 
+    private lateinit var favoriteButton: TextView
+    private fun updateFavoriteButton() {
+        favoriteButton.text = if (FavoritePlaces.find(this,destLat,destLng)==null) "☆ 收藏到常用目的地" else "★ 已收藏 · 改名 / 删除"
+    }
+
     private fun chooseDest(name: String, addr: String, lat: Double, lng: Double, share: AmapShare.Route? = null) {
         if (addingVia && share == null) { addVia(name, lat, lng); return }     // v4.9 正在选途经点
         if (share == null) clearShare()                 // v4.4 自己选的目的地：不再按分享的路线走
@@ -710,6 +722,7 @@ class RoutePlanActivity : AppCompatActivity() {
         hwChip.visibility = if (share?.isTravel == true) View.GONE else View.VISIBLE
         amapShareBtn.visibility = if (!share?.sourceUrl.isNullOrBlank()) View.VISIBLE else View.GONE
         destName = name; destAddr = addr; destLat = lat; destLng = lng
+        updateFavoriteButton()
         saveHistory(name, if (share != null) "" else addr, lat, lng)
         hideKeyboard()
         suppressSearch = true; input.setText(name); suppressSearch = false

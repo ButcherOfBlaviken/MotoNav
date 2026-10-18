@@ -1,5 +1,5 @@
 {
-  "appVersion": "8.3.19",
+  "appVersion": "8.3.21",
   "boards": [
     "Waveshare ESP32-S3-Touch-AMOLED-1.75"
   ],
@@ -7,10 +7,10 @@
   "credentialsIncluded": false,
   "signingFilesIncluded": false,
   "anonymousBuildVerified": true,
-  "anonymousBuildSignatureVerified": true,
+  "anonymousBuildSignatureVerified": false,
   "privateLogsIncluded": false,
   "originalGitHistoryIncluded": false,
-  "date": "2026-10-17",
+  "date": "2026-10-18",
   "namespace": "com.example.motonav",
   "existingLogicChecks": 41,
   "showcaseIncluded": true,
@@ -29,5 +29,13 @@
   ],
   "iosFirmwareVersion": "7.12.0",
   "androidFirmwareVersion": "7.12.0",
-  "firmwareShared": true
+  "firmwareShared": true,
+  "androidReleaseNotes": "docs/RELEASE-ANDROID-8.3.21.md",
+  "androidArrivalFixDeviceTest": "Titan 2 / firmware 7.8.12 / simulated navigation / user confirmed",
+  "androidCurrentRepositoryFirmwareRetest": false,
+  "androidUnsignedReleaseBuildVerified": true,
+  "androidArrivalPolicyChecks": 45,
+  "androidMapAndRidePolicyChecks": 34,
+  "androidPersistenceChecks": 33,
+  "androidCrashRecoveryChecks": 7
 }

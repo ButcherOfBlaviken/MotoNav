@@ -735,6 +735,11 @@ object MapFeeder {
     fun toFrame(lat: Double, lng: Double): IntArray? = frame?.let { intArrayOf(it.x(lng).roundToInt(), it.y(lat).roundToInt()) }
     fun frameId(): Int? = frame?.id
 
+    fun loadingStatus(): String = MapLoadStatus.text(enabled,routeOnly(),BleLink.isConnected,BleLink.verified,
+        frame!=null,haveChunk && chunkBytes!=null && !chunkAcked,
+        BleLink.bulkProgress(chunkType,chunkId) ?: -1,fetching,
+        lastFetchFail>0 && (status.contains("失败") || status.contains("内存不足")),haveConfirmedChunk && chunkAcked)
+
     fun infoText(): String =
         if (!enabled) "已关闭" else if (routeOnly()) "龙珠雷达：绿色网格，无底图下载与传输\n$routeInfo${if (routeAcked) "（圆屏已确认）" else ""}" else "来源：${sourceName()}　$status\n$chunkInfo${if (chunkAcked) "（圆屏已确认）" else ""}\n" +
             "$routeInfo${if (routeAcked) "（圆屏已确认）" else ""}\n" + offlineStatus() + "\n" + coverageInfo()

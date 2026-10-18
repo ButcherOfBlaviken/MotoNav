@@ -80,6 +80,7 @@ class NavService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
+        RideRecorder.stop()
         AmapCaptureHost.serviceStopped(this)
         running = false
         CallWatcher.stop()                // v5.0
