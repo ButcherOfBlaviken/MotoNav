@@ -9,15 +9,32 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <M5IOE1.h>
+#include <M5PM1.h>
 
 class StopWatchBoard {
 public:
   static M5IOE1 ioe;
+  static M5PM1 pm1;
   static bool ok;
+  static bool pm1OK;
 
   // 在 setup() 的 Wire.begin(IIC_SDA, IIC_SCL) 之后立刻调用
   static void init() {
-    // 官方顺序：先试 0x4F，失败换 0x6F
+    // M5PM1 电源管理（0x6E）：照官方 UserDemo hal_pmic.cpp 的初始化序列。
+    // 关键项：wdtSet(0) 关看门狗（默认开着，不关可能被它复位）、使能充电、
+    // PMG3 推挽输出低（CHG_PROG）、PMG2 输入（CHG_STAT 充电状态脚）。
+    pm1OK = (pm1.begin(&Wire, 0x6E, IIC_SDA, IIC_SCL, 400000) == M5PM1_OK);
+    if (pm1OK) {
+      pm1.setI2cSleepTime(0);
+      pm1.wdtSet(0);
+      pm1.setChargeEnable(true);
+      pm1.gpioSet(M5PM1_GPIO_NUM_3, M5PM1_GPIO_MODE_OUTPUT, 0,
+                  M5PM1_GPIO_PULL_NONE, M5PM1_GPIO_DRIVE_PUSHPULL);
+      pm1.gpioSetFunc(M5PM1_GPIO_NUM_2, M5PM1_GPIO_FUNC_GPIO);
+      pm1.gpioSetMode(M5PM1_GPIO_NUM_2, M5PM1_GPIO_MODE_INPUT);
+      pm1.gpioSetPull(M5PM1_GPIO_NUM_2, M5PM1_GPIO_PULL_NONE);
+    }
+    // M5IOE1 扩展芯片：官方顺序：先试 0x4F，失败换 0x6F
     ok = (ioe.begin(&Wire, 0x4F, IIC_SDA, IIC_SCL, 400000) == M5IOE1_OK) ||
          (ioe.begin(&Wire, 0x6F, IIC_SDA, IIC_SCL, 400000) == M5IOE1_OK);
     if (!ok) {
@@ -63,4 +80,6 @@ public:
 };
 
 M5IOE1 StopWatchBoard::ioe;
+M5PM1 StopWatchBoard::pm1;
 bool StopWatchBoard::ok = false;
+bool StopWatchBoard::pm1OK = false;

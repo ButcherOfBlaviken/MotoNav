@@ -1499,16 +1499,12 @@ void pmuSetBit(uint8_t reg, uint8_t bit) {
 
 // 开机时调一次：只打开电量计、电池检测、电池电压测量，不动任何供电设置
 void batInit() {
-  // StopWatch：板上电源管理是 M5Stack 私有 M5PM1，不是 AXP2101。
-  // 上面的 pmuRead/pmuSetBit 按 AXP2101 的固定寄存器表访问 0x34，
-  // 为避免向未知设备误写，本板型直接禁用电池功能（无电池图标）。
-  pmuOK = false;
-  return;
-  pmuOK = pmuRead(0x00) >= 0;
+  // StopWatch：电源管理是 M5PM1（0x6E），已在 StopWatchBoard::init() 里完成初始化
+  //（含关看门狗、使能充电、CHG_PROG/CHG_STAT 脚配置）。这里做一次首读确认电池在位。
+  pmuOK = StopWatchBoard::pm1OK;
   if (!pmuOK) return;
-  pmuSetBit(0x18, 3);                  // 电量计
-  pmuSetBit(0x68, 0);                  // 电池检测
-  pmuSetBit(0x30, 0);                  // 电池电压测量
+  uint16_t mv = 0;
+  if (StopWatchBoard::pm1.readVbat(&mv) != M5PM1_OK || mv < 2800) pmuOK = false;
 }
 
 // 小电池图标：x0,y0 = 左上角（电池身 24x12，右边小凸头，再右边是百分比数字）
@@ -4086,22 +4082,29 @@ void batPoll() {
   unsigned long now = millis();
   if (batAt && now - batAt < 5000) return;
   batAt = now;
-  int s1 = pmuRead(0x00), s2 = pmuRead(0x01);
-  if (s1 < 0 || s2 < 0) return;
-  bool present = (s1 >> 3) & 1;
+  // StopWatch：M5PM1 读电池电压/输入电压/充电脚；电量按官方 UserDemo 的
+  // 3300-4200mV 线性映射 + 7:1 低通滤波（避免显示跳动）
+  uint16_t mv = 0, vin = 0;
+  uint8_t chgStat = 1;
+  bool vOK = StopWatchBoard::pm1.readVbat(&mv) == M5PM1_OK;
+  bool vinOK = StopWatchBoard::pm1.readVin(&vin) == M5PM1_OK;
+  StopWatchBoard::pm1.gpioGetInput(M5PM1_GPIO_NUM_2, &chgStat);
+  bool present = false;
   int pct = -1;
-  if (present) {
-    int v = pmuRead(0xA4);
-    if (v >= 0 && v <= 100) pct = v;
-    int h = pmuRead(0x34), l = pmuRead(0x35);
-    if (h >= 0 && l >= 0) batMv = ((h & 0x1F) << 8) | l;
+  if (vOK && mv >= 2800) {
+    present = true;
+    batMv = mv;
+    static uint16_t filt = 0;
+    filt = filt == 0 ? mv : (filt * 7 + mv + 4) / 8;
+    pct = (int)constrain((int32_t)(filt - 3300) * 100 / 900, 0, 100);
   }
   // v7.2 偶尔读不到电池：先沿用上次的电量，连续 3 次读不到才当成没接电池
   static int missCnt = 0;
   if (pct < 0) { if (batPct >= 0 && ++missCnt < 3) { pct = batPct; present = true; } }
   else missCnt = 0;
-  bool chg = present && ((s2 >> 5) & 3) == 1;
-  bool usb = ((s1 >> 5) & 1) && !((s2 >> 3) & 1);
+  // 充电中 = 有外部供电（Vin>4V）且 CHG_STAT 脚为低；插着 USB 只看 Vin
+  bool chg = present && vinOK && vin > 4000 && chgStat == 0;
+  bool usb = vinOK && vin > 4000;
   bool changed = pct != batPct || chg != batChg || usb != usbIn;
   batPct = pct; batChg = chg; usbIn = usb;
   if (mediaHid && changed && pct >= 0) mediaHid->setBatteryLevel((uint8_t)constrain(pct, 0, 100));
